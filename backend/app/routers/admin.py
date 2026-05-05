@@ -1,10 +1,10 @@
+import asyncio
+import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pinecone import Pinecone
 from sqlalchemy.orm import Session
 
-from app.config import settings
 from app.db.database import get_db
 from app.middleware.clerk_auth import require_bearer_token
 from app.models.index_registry import IndexRegistry
@@ -14,8 +14,21 @@ from app.models.schemas import (
     IndexRegistryResponse,
     IndexRegistryUpdate,
 )
+from app.services.pinecone_service import get_factory
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+def _parse_index_id(index_id: str) -> uuid.UUID:
+    try:
+        return uuid.UUID(index_id)
+    except ValueError:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid index_id",
+        )
 
 
 @router.get("/indexes")
@@ -24,9 +37,13 @@ async def list_indexes(
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 100,
+    include_inactive: bool = False,
 ) -> dict:
-    total = db.query(IndexRegistry).count()
-    indexes = db.query(IndexRegistry).offset(skip).limit(limit).all()
+    base_query = db.query(IndexRegistry)
+    if not include_inactive:
+        base_query = base_query.filter(IndexRegistry.is_active == True)  # noqa: E712
+    total = base_query.count()
+    indexes = base_query.offset(skip).limit(limit).all()
     return {
         "indexes": [IndexRegistryResponse.model_validate(idx) for idx in indexes],
         "count": total,
@@ -65,11 +82,7 @@ async def get_index(
     token: str = Depends(require_bearer_token),
     db: Session = Depends(get_db),
 ) -> IndexRegistryResponse:
-    try:
-        entry_uuid = uuid.UUID(index_id)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid index_id")
-    entry = db.query(IndexRegistry).filter(IndexRegistry.id == entry_uuid).first()
+    entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
     if not entry:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Index not found")
     return IndexRegistryResponse.model_validate(entry)
@@ -82,11 +95,7 @@ async def update_index(
     token: str = Depends(require_bearer_token),
     db: Session = Depends(get_db),
 ) -> IndexRegistryResponse:
-    try:
-        entry_uuid = uuid.UUID(index_id)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid index_id")
-    entry = db.query(IndexRegistry).filter(IndexRegistry.id == entry_uuid).first()
+    entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
     if not entry:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Index not found")
     for field, value in payload.model_dump(exclude_unset=True).items():
@@ -102,11 +111,7 @@ async def delete_index(
     token: str = Depends(require_bearer_token),
     db: Session = Depends(get_db),
 ) -> None:
-    try:
-        entry_uuid = uuid.UUID(index_id)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid index_id")
-    entry = db.query(IndexRegistry).filter(IndexRegistry.id == entry_uuid).first()
+    entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
     if not entry:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Index not found")
     entry.is_active = False
@@ -119,37 +124,39 @@ async def discover_indexes(
     db: Session = Depends(get_db),
 ) -> dict:
     discovered: list[DiscoveredIndex] = []
+    partial_failures: list[str] = []
 
     existing_keys = {
         (idx.index_name, idx.project_id)
         for idx in db.query(IndexRegistry.index_name, IndexRegistry.project_id).all()
     }
 
-    project_keys = {
-        "1": settings.pinecone_api_key_1,
-        "2": settings.pinecone_api_key_2,
-        "3": settings.pinecone_api_key_3,
-    }
+    factory = get_factory()
 
-    for project_id, api_key in project_keys.items():
-        if not api_key:
+    for project_id in ("1", "2", "3"):
+        try:
+            pc = factory.get_client(project_id)
+        except ValueError:
+            # Project not configured — skip silently
             continue
 
         try:
-            pc = Pinecone(api_key=api_key)
-            indexes = pc.list_indexes()
+            indexes = await asyncio.to_thread(pc.list_indexes)
             for idx in indexes:
                 name = idx.name
                 dimension = getattr(idx, "dimension", None)
                 metric = getattr(idx, "metric", "cosine")
 
-                # Fetch full spec if dimension wasn't on the list response
                 if dimension is None:
                     try:
-                        desc = pc.describe_index(name)
+                        desc = await asyncio.to_thread(pc.describe_index, name)
                         dimension = desc.dimension
                         metric = desc.metric
-                    except Exception:
+                    except Exception as inner_exc:
+                        logger.warning(
+                            "describe_index failed for %s in project %s: %s",
+                            name, project_id, inner_exc,
+                        )
                         dimension = 0
 
                 discovered.append(
@@ -161,8 +168,14 @@ async def discover_indexes(
                         already_in_registry=(name, project_id) in existing_keys,
                     )
                 )
-        except Exception:
-            # Skip projects whose Pinecone calls fail; don't block the others.
+        except Exception as exc:
+            failure_msg = f"project {project_id}: {type(exc).__name__}: {exc}"
+            logger.warning("discover failed: %s", failure_msg)
+            partial_failures.append(failure_msg)
             continue
 
-    return {"discovered": [d.model_dump() for d in discovered], "count": len(discovered)}
+    return {
+        "discovered": [d.model_dump() for d in discovered],
+        "count": len(discovered),
+        "partial_failures": partial_failures,
+    }
