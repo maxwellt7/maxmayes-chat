@@ -69,9 +69,13 @@ async def get_history(
     token: str = Depends(require_bearer_token),
     db: Session = Depends(get_db),
 ) -> dict:
+    user_id = token  # Phase 1 placeholder — matches chat_endpoint user_id derivation
     messages = (
         db.query(ChatMessage)
-        .filter(ChatMessage.session_id == session_id)
+        .filter(
+            ChatMessage.session_id == session_id,
+            ChatMessage.user_id == user_id,
+        )
         .order_by(ChatMessage.created_at)
         .all()
     )
