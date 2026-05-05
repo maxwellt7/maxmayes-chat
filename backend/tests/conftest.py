@@ -14,8 +14,6 @@ _psycopg = ModuleType("psycopg")
 sys.modules.setdefault("psycopg", _psycopg)
 
 # --- stub the database module so engine creation is skipped ---
-import unittest.mock as _mock
-
 _db_mod = ModuleType("app.db.database")
 _db_mod.Base = MagicMock()
 _db_mod.SessionLocal = MagicMock()

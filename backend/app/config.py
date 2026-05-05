@@ -19,6 +19,7 @@ class Settings(BaseSettings):
 
     voice_index_name: str = "max-copywriting-voice"
     voice_index_project: str = "1"
+    voice_index_dimension: int = 1536
 
     model_config = SettingsConfigDict(
         env_file=".env",

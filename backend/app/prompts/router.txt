@@ -16,6 +16,6 @@ If confidence is below 0.7, also include a "candidates" array with the next 1-2 
 }
 
 Available indexes:
-{catalog}
+$catalog
 
-Query: {query}
+Query: $query

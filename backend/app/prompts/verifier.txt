@@ -12,7 +12,7 @@ Scoring guide:
 - 0.5–0.7: Context partially addresses the query, some gaps → "proceed_with_caveat"
 - 0.0–0.4: Context does not support answering → "insufficient_context"
 
-Query: {query}
+Query: $query
 
 Retrieved chunks:
-{chunks}
+$chunks
