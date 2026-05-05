@@ -4,7 +4,10 @@ const isProtectedRoute = createRouteMatcher(["/chat(.*)", "/admin(.*)"]);
 
 export default clerkMiddleware(async (auth, req) => {
   if (isProtectedRoute(req)) {
-    await auth.protect();
+    const authData = await auth();
+    if (!authData.userId) {
+      return authData.redirectToSignIn({ returnBackUrl: req.url });
+    }
   }
 });
 
