@@ -1,24 +1,29 @@
-import os
 from typing import Any
 
 from pinecone import Pinecone
 
+from app.config import settings
+
 
 class PineconeClientFactory:
-    _PROJECT_KEY_MAP = {
-        "1": "PINECONE_API_KEY_1",
-        "2": "PINECONE_API_KEY_2",
-        "3": "PINECONE_API_KEY_3",
+    # Keys must stay in sync with the pinecone_api_key_N fields in app/config.py Settings.
+    _PROJECT_KEY_ATTR_MAP = {
+        "1": "pinecone_api_key_1",
+        "2": "pinecone_api_key_2",
+        "3": "pinecone_api_key_3",
     }
 
     def __init__(self) -> None:
         self._cache: dict[str, Pinecone] = {}
 
     def _key_for_project(self, project_id: str) -> str:
-        env_var = self._PROJECT_KEY_MAP.get(project_id)
-        if not env_var:
+        attr = self._PROJECT_KEY_ATTR_MAP.get(project_id)
+        if not attr:
             raise ValueError(f"Unknown project_id: {project_id}")
-        return os.environ[env_var]
+        api_key = getattr(settings, attr, "")
+        if not api_key:
+            raise ValueError(f"Pinecone API key for project_id {project_id} is not configured")
+        return api_key
 
     def get_client(self, project_id: str) -> Pinecone:
         if project_id not in self._cache:
@@ -33,17 +38,23 @@ def retrieve(
     vector: list[float],
     top_k: int = 10,
 ) -> list[dict[str, Any]]:
+    if not index_name:
+        raise ValueError("index_name must be a non-empty string")
     client = factory.get_client(project_id)
     index = client.Index(index_name)
     results = index.query(vector=vector, top_k=top_k, include_metadata=True)
     return [
-        {"text": match.metadata.get("text", ""), "score": match.score}
+        {"text": (match.metadata or {}).get("text", ""), "score": match.score}
         for match in results.matches
     ]
 
 
-_factory = PineconeClientFactory()
+# Lazy singleton — constructed on first call to get_factory()
+_factory: PineconeClientFactory | None = None
 
 
 def get_factory() -> PineconeClientFactory:
+    global _factory
+    if _factory is None:
+        _factory = PineconeClientFactory()
     return _factory
