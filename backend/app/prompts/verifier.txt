@@ -1,0 +1,18 @@
+You are an accuracy verifier. Given a user query and retrieved document chunks, assess whether the context contains enough information to answer the query faithfully.
+
+Return valid JSON:
+{
+  "score": <0.0 to 1.0>,
+  "recommendation": "proceed" | "proceed_with_caveat" | "insufficient_context",
+  "reasoning": "<one sentence>"
+}
+
+Scoring guide:
+- 0.8–1.0: Context directly answers the query → "proceed"
+- 0.5–0.7: Context partially addresses the query, some gaps → "proceed_with_caveat"
+- 0.0–0.4: Context does not support answering → "insufficient_context"
+
+Query: {query}
+
+Retrieved chunks:
+{chunks}
