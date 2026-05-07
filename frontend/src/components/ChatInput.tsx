@@ -34,7 +34,7 @@ export function ChatInput({ onSend, disabled }: Props) {
         value={value}
         rows={3}
         disabled={disabled}
-        placeholder="Ask anything… (Cmd+Enter to send)"
+        placeholder="What would you like to ask the archive?"
         onChange={(e) => setValue(e.target.value)}
         onKeyDown={handleKeyDown}
       />

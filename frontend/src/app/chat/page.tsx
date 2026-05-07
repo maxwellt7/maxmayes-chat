@@ -82,17 +82,19 @@ export default function ChatPage() {
 
   return (
     <div className="chat-page">
+      <div className="chat-masthead">
+        <div className="chat-masthead-title">Today&apos;s Inquiry</div>
+        <div className="chat-masthead-meta">
+          {messages.length > 0 ? `${messages.length} entries` : "blank page"}
+        </div>
+      </div>
       <ChatWindow
         messages={messages}
         streamingResponse={streamingResponse}
         onStreamComplete={handleStreamComplete}
         onStreamError={handleStreamError}
       />
-      {error && (
-        <p style={{ color: "#e05252", fontSize: "0.85rem", padding: "0.5rem 0" }}>
-          {error}
-        </p>
-      )}
+      {error && <p className="chat-error">{error}</p>}
       <ChatInput onSend={handleSend} disabled={isStreaming} />
     </div>
   );

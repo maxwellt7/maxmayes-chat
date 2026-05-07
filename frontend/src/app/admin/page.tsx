@@ -91,19 +91,27 @@ export default function AdminPage() {
   return (
     <div className="admin-page">
       <div className="admin-header">
-        <h1>Index Registry</h1>
+        <div>
+          <h1>The Catalogue</h1>
+          <p className="subtitle">Forty-odd indices, indexed and laid out for inspection.</p>
+        </div>
         <button className="btn" onClick={handleDiscover} disabled={discovering}>
-          {discovering ? "Scanning Pinecone…" : "Discover from Pinecone"}
+          {discovering ? "Surveying…" : "Discover from Pinecone"}
         </button>
       </div>
 
-      {error && <p style={{ color: "#e05252", marginBottom: "1rem" }}>{error}</p>}
+      {error && <p className="error-banner">{error}</p>}
 
       {discovered && (
-        <div className="card" style={{ marginBottom: "1.5rem" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "1rem" }}>
-            <h3 style={{ margin: 0 }}>Discovered Indexes ({discovered.length})</h3>
-            <button className="btn btn-sm btn-outline" onClick={() => setDiscovered(null)}>Dismiss</button>
+        <div className="discovered-panel">
+          <div className="discovered-panel-header">
+            <h3>
+              Found in Pinecone
+              <span style={{ color: "var(--ink-faint)", fontFamily: "var(--font-mono)", fontSize: "0.78rem", marginLeft: "0.5rem", letterSpacing: "0.1em" }}>
+                {discovered.length} entries
+              </span>
+            </h3>
+            <button className="btn btn-sm btn-ghost" onClick={() => setDiscovered(null)}>Dismiss</button>
           </div>
           <table className="registry-table">
             <thead>
@@ -114,20 +122,16 @@ export default function AdminPage() {
                 const key = `${d.index_name}-${d.project_id}`;
                 return (
                   <tr key={key}>
-                    <td>{d.index_name}</td>
-                    <td>{d.project_id}</td>
-                    <td>{d.dimension}</td>
-                    <td>{d.metric}</td>
+                    <td><span className="registry-name">{d.index_name}</span></td>
+                    <td><span className="registry-meta">P{d.project_id}</span></td>
+                    <td><span className="registry-meta">{d.dimension}</span></td>
+                    <td><span className="registry-meta">{d.metric}</span></td>
                     <td>
                       {d.already_in_registry ? (
-                        <span style={{ color: "#888", fontSize: "0.8rem" }}>Already imported</span>
+                        <span className="label">In Catalogue</span>
                       ) : (
-                        <button
-                          className="btn btn-sm"
-                          disabled={importing.has(key)}
-                          onClick={() => handleImport(d)}
-                        >
-                          {importing.has(key) ? "Importing…" : "Import"}
+                        <button className="btn btn-sm btn-outline" disabled={importing.has(key)} onClick={() => handleImport(d)}>
+                          {importing.has(key) ? "Adding…" : "Add"}
                         </button>
                       )}
                     </td>
@@ -140,36 +144,45 @@ export default function AdminPage() {
       )}
 
       {loading ? (
-        <p>Loading registry…</p>
+        <p className="loading">Drawing the catalogue…</p>
       ) : (
         <table className="registry-table">
           <thead>
-            <tr><th>Index</th><th>Project</th><th>Dim</th><th>Model</th><th>Status</th><th>Description</th><th></th></tr>
+            <tr>
+              <th>Index</th>
+              <th>Project</th>
+              <th>Dim</th>
+              <th>Status</th>
+              <th>Description</th>
+              <th></th>
+            </tr>
           </thead>
           <tbody>
             {indexes.length === 0 && (
-              <tr><td colSpan={7} style={{ color: "#888", padding: "2rem 0" }}>No indexes yet. Click &quot;Discover from Pinecone&quot; to get started.</td></tr>
+              <tr><td colSpan={6} className="empty-row">The catalogue is empty. Click &ldquo;Discover from Pinecone&rdquo; to seed it.</td></tr>
             )}
             {indexes.map((idx) => (
               <tr key={idx.id}>
-                <td>{idx.index_name}</td>
-                <td>{idx.project_id}</td>
-                <td>{idx.dimension}</td>
-                <td style={{ fontSize: "0.8rem", color: "#aaa" }}>{idx.embedding_model}</td>
+                <td><span className="registry-name">{idx.index_name}</span></td>
+                <td><span className="registry-meta">P{idx.project_id}</span></td>
+                <td><span className="registry-meta">{idx.dimension}</span></td>
                 <td>
                   <button
-                    className={`badge ${idx.is_active ? "badge-active" : "badge-inactive"}`}
+                    className={`sigil ${idx.is_active ? "sigil-active" : ""}`}
                     onClick={() => handleToggleActive(idx)}
-                    style={{ cursor: "pointer", background: "none" }}
+                    aria-label={idx.is_active ? "Active — click to deactivate" : "Inactive — click to activate"}
                   >
-                    {idx.is_active ? "Active" : "Inactive"}
+                    <span className="sigil-mark" />
+                    {idx.is_active ? "Open" : "Closed"}
                   </button>
                 </td>
-                <td style={{ maxWidth: "240px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", color: "#aaa", fontSize: "0.85rem" }}>
-                  {idx.domain_description || <em style={{ color: "#555" }}>No description yet</em>}
+                <td>
+                  <div className="registry-description">
+                    {idx.domain_description ? idx.domain_description : <em>not yet described</em>}
+                  </div>
                 </td>
                 <td>
-                  <Link href={`/admin/indexes/${idx.id}`} className="btn btn-sm btn-outline">Edit</Link>
+                  <Link href={`/admin/indexes/${idx.id}`} className="btn btn-sm btn-ghost">Edit →</Link>
                 </td>
               </tr>
             ))}

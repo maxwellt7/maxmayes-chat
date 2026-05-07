@@ -75,49 +75,47 @@ export default function EditIndexPage() {
     setEntry({ ...entry, sample_queries: entry.sample_queries.filter((_, idx) => idx !== i) });
   };
 
-  if (!entry) return <div className="admin-page"><p>{error ?? "Loading…"}</p></div>;
+  if (!entry) return <div className="edit-page"><p className="loading">{error ?? "Drawing the page…"}</p></div>;
 
   return (
-    <div className="admin-page">
-      <div className="admin-header">
-        <div>
+    <div className="edit-page">
+      <div className="edit-header">
+        <div className="edit-header-info">
           <h1>{entry.index_name}</h1>
-          <p style={{ color: "#888", margin: "0.25rem 0 0", fontSize: "0.875rem" }}>
+          <div className="edit-header-meta">
             Project {entry.project_id} · {entry.dimension}d · {entry.embedding_model}
-          </p>
+          </div>
         </div>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button className="btn btn-outline" onClick={() => router.push("/admin")}>Cancel</button>
-          <button className="btn" onClick={handleSave} disabled={saving}>
+        <div className="edit-header-actions">
+          <button className="btn btn-outline btn-sm" onClick={() => router.push("/admin")}>Cancel</button>
+          <button className="btn btn-sm" onClick={handleSave} disabled={saving}>
             {saving ? "Saving…" : "Save"}
           </button>
         </div>
       </div>
 
-      {error && <p style={{ color: "#e05252", marginBottom: "1rem" }}>{error}</p>}
+      {error && <p className="error-banner">{error}</p>}
 
       <div className="edit-form">
         <div className="form-field">
-          <label className="form-label">
-            Domain Description
-            <span style={{ color: "#888", fontWeight: 400, marginLeft: "0.5rem" }}>
-              — What topics and content does this index contain? Be specific. The router LLM uses this to decide which index to query.
-            </span>
-          </label>
+          <label className="form-label">Domain Description</label>
+          <span className="form-label-aside">
+            What lives in this index? Be specific — content, frameworks, projects. The router uses this to decide which index a question belongs to.
+          </span>
           <textarea
             className="form-textarea"
-            style={{ minHeight: "140px" }}
+            style={{ minHeight: "160px" }}
             value={entry.domain_description}
             onChange={(e) => setEntry({ ...entry, domain_description: e.target.value })}
-            placeholder="e.g. Contains Max's email copywriting frameworks, subject line formulas, and onboarding sequence templates."
+            placeholder="e.g. Email copywriting frameworks, subject line formulas, and onboarding sequence templates from 2022–present."
           />
         </div>
 
         <div className="form-field">
           <label className="form-label">Sample Queries</label>
-          <p style={{ color: "#888", fontSize: "0.825rem", margin: "0 0 0.5rem" }}>
-            Representative questions that should route to this index. Add 3–5 examples.
-          </p>
+          <span className="form-label-aside">
+            Three to five questions that should land here. Phrasing matters — write them how you&apos;d actually ask.
+          </span>
           <div className="tag-list">
             {entry.sample_queries.map((q, i) => (
               <span key={i} className="tag">
@@ -126,7 +124,7 @@ export default function EditIndexPage() {
               </span>
             ))}
           </div>
-          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem" }}>
+          <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.4rem" }}>
             <input
               className="form-input"
               style={{ flex: 1 }}
@@ -138,40 +136,32 @@ export default function EditIndexPage() {
                   addQuery();
                 }
               }}
-              placeholder="Type a sample query and press Enter"
+              placeholder="A representative question…"
             />
-            <button className="btn btn-sm" onClick={addQuery}>Add</button>
+            <button className="btn btn-sm btn-outline" onClick={addQuery}>Add</button>
           </div>
         </div>
 
         <div className="form-field">
-          <label className="form-label">Active</label>
-          <label style={{ display: "flex", alignItems: "center", gap: "0.5rem", cursor: "pointer" }}>
+          <label className="form-label">Inclusion</label>
+          <label className="checkbox-row">
             <input
               type="checkbox"
               checked={entry.is_active}
               onChange={(e) => setEntry({ ...entry, is_active: e.target.checked })}
             />
-            <span style={{ fontSize: "0.9rem" }}>Include this index in query routing</span>
+            <span className="checkbox-label">Include this index in routing decisions</span>
           </label>
         </div>
 
-        <div style={{ display: "flex", gap: "1rem" }}>
+        <div style={{ display: "flex", gap: "1.5rem" }}>
           <div className="form-field" style={{ flex: 1 }}>
             <label className="form-label">Embedding Model</label>
-            <input
-              className="form-input"
-              value={entry.embedding_model}
-              onChange={(e) => setEntry({ ...entry, embedding_model: e.target.value })}
-            />
+            <input className="form-input" value={entry.embedding_model} onChange={(e) => setEntry({ ...entry, embedding_model: e.target.value })} />
           </div>
           <div className="form-field" style={{ flex: 1 }}>
             <label className="form-label">Metric</label>
-            <select
-              className="form-select"
-              value={entry.metric}
-              onChange={(e) => setEntry({ ...entry, metric: e.target.value })}
-            >
+            <select className="form-select" value={entry.metric} onChange={(e) => setEntry({ ...entry, metric: e.target.value })}>
               <option value="cosine">cosine</option>
               <option value="dotproduct">dotproduct</option>
               <option value="euclidean">euclidean</option>
