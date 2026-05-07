@@ -39,7 +39,7 @@ export async function startChatStream(
 // ---- Admin ----
 
 export async function listIndexes(token: string) {
-  const res = await fetch(apiUrl("/api/admin/indexes"), {
+  const res = await fetch(apiUrl("/api/admin/indexes?include_inactive=true"), {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (!res.ok) throw new Error(`Failed to list indexes: ${res.status}`);
