@@ -44,9 +44,53 @@ def retrieve(
     index = client.Index(index_name)
     results = index.query(vector=vector, top_k=top_k, include_metadata=True)
     return [
-        {"text": (match.metadata or {}).get("text", ""), "score": match.score}
+        {
+            "text": _extract_text_from_metadata(match.metadata or {}),
+            "score": match.score,
+            "metadata": match.metadata or {},
+        }
         for match in results.matches
     ]
+
+
+_TEXT_FIELD_CANDIDATES = (
+    "text",
+    "content",
+    "chunk_text",
+    "chunk",
+    "body",
+    "page_content",
+    "passage",
+    "transcript",
+    "summary",
+    "raw_text",
+    "_node_content",
+)
+
+
+def _extract_text_from_metadata(metadata: dict[str, Any]) -> str:
+    """Try common text field names first, then fall back to any string value > 40 chars."""
+    for key in _TEXT_FIELD_CANDIDATES:
+        val = metadata.get(key)
+        if isinstance(val, str) and val.strip():
+            # _node_content is sometimes JSON — extract the inner text if so
+            if key == "_node_content":
+                try:
+                    import json as _json
+                    parsed = _json.loads(val)
+                    if isinstance(parsed, dict):
+                        for inner_key in ("text", "content", "page_content"):
+                            inner = parsed.get(inner_key)
+                            if isinstance(inner, str) and inner.strip():
+                                return inner
+                except Exception:
+                    pass
+            return val
+    # Fallback: any string field longer than 40 chars
+    for key, val in metadata.items():
+        if isinstance(val, str) and len(val.strip()) > 40:
+            return val
+    return ""
 
 
 # Lazy singleton — constructed on first call to get_factory()

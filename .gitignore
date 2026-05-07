@@ -1,0 +1,8 @@
+.vercel
+
+# Build artifacts
+**/.next/
+**/__pycache__/
+
+# Local env (do NOT commit)
+**/.env.local
