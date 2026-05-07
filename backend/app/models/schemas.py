@@ -44,7 +44,7 @@ class IndexRegistryUpdate(BaseModel):
 
 
 class IndexRegistryResponse(BaseModel):
-    id: str
+    id: uuid.UUID
     index_name: str
     project_id: str
     api_key_env_var: str
