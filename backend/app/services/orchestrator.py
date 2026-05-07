@@ -172,7 +172,15 @@ async def run_pipeline(
     # Step C: retrieve
     factory = get_factory()
     vector = await asyncio.to_thread(generate_embedding, optimized, registry_entry.dimension)
-    chunks = await asyncio.to_thread(retrieve, factory, index_name, project_id, vector, 10)
+    try:
+        chunks = await asyncio.to_thread(retrieve, factory, index_name, project_id, vector, 10)
+    except Exception as exc:
+        _log.warning("retrieve failed for %s/%s: %s", project_id, index_name, exc)
+        # Auto-deactivate the broken index so the router stops choosing it
+        registry_entry.is_active = False
+        db.commit()
+        yield "I tried to consult one of my indexes, but it appears to have been moved or removed. I've deactivated it — please try your question again."
+        return
 
     # Multi-index fallback for low confidence
     if route_result.get("confidence", 1.0) < 0.7 and route_result.get("candidates"):
@@ -190,13 +198,18 @@ async def run_pipeline(
                 .first()
             )
             if candidate_entry:
-                extra_vector = await asyncio.to_thread(
-                    generate_embedding, optimized, candidate_entry.dimension
-                )
-                extra_chunks = await asyncio.to_thread(
-                    retrieve, factory, cand_index, cand_project, extra_vector, 5
-                )
-                chunks = sorted(chunks + extra_chunks, key=lambda c: c["score"], reverse=True)[:10]
+                try:
+                    extra_vector = await asyncio.to_thread(
+                        generate_embedding, optimized, candidate_entry.dimension
+                    )
+                    extra_chunks = await asyncio.to_thread(
+                        retrieve, factory, cand_index, cand_project, extra_vector, 5
+                    )
+                    chunks = sorted(chunks + extra_chunks, key=lambda c: c["score"], reverse=True)[:10]
+                except Exception as exc:
+                    _log.warning("candidate retrieve failed for %s/%s: %s", cand_project, cand_index, exc)
+                    candidate_entry.is_active = False
+                    db.commit()
 
     # Step D: verify
     verification = await verify_accuracy(raw_query, chunks)

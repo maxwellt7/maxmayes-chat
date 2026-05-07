@@ -210,6 +210,37 @@ async def auto_describe_all(
     }
 
 
+@router.post("/indexes/health-check")
+async def health_check_all_indexes(
+    token: str = Depends(require_bearer_token),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Ping each active index in Pinecone. Deactivate any that 404."""
+    active = db.query(IndexRegistry).filter(IndexRegistry.is_active == True).all()  # noqa: E712
+    factory = get_factory()
+    healthy: list[str] = []
+    deactivated: list[dict] = []
+
+    for entry in active:
+        try:
+            client = factory.get_client(entry.project_id)
+            # Just hit describe_index — no need to embed/query
+            await asyncio.to_thread(client.describe_index, entry.index_name)
+            healthy.append(entry.index_name)
+        except Exception as exc:
+            entry.is_active = False
+            db.commit()
+            deactivated.append({"index_name": entry.index_name, "reason": str(exc)[:200]})
+            logger.warning("health-check deactivated %s: %s", entry.index_name, exc)
+
+    return {
+        "healthy": healthy,
+        "healthy_count": len(healthy),
+        "deactivated": deactivated,
+        "deactivated_count": len(deactivated),
+    }
+
+
 @router.post("/discover")
 async def discover_indexes(
     token: str = Depends(require_bearer_token),
