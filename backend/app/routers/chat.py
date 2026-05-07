@@ -6,7 +6,7 @@ from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.middleware.clerk_auth import require_bearer_token
+from app.middleware.clerk_auth import extract_user_id, require_bearer_token
 from app.models.chat import ChatMessage
 from app.models.schemas import ChatRequest
 from app.services.orchestrator import run_pipeline
@@ -21,7 +21,7 @@ async def chat_endpoint(
     db: Session = Depends(get_db),
 ) -> StreamingResponse:
     request_id = str(uuid.uuid4())
-    user_id = token  # Phase 1 placeholder — full Clerk JWT decoding lands later
+    user_id = extract_user_id(token)
 
     # Persist user message
     db.add(ChatMessage(
@@ -69,7 +69,7 @@ async def get_history(
     token: str = Depends(require_bearer_token),
     db: Session = Depends(get_db),
 ) -> dict:
-    user_id = token  # Phase 1 placeholder — matches chat_endpoint user_id derivation
+    user_id = extract_user_id(token)
     messages = (
         db.query(ChatMessage)
         .filter(
