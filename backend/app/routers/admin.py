@@ -2,10 +2,10 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from app.db.database import get_db
+from app.db.database import SessionLocal, get_db
 from app.middleware.clerk_auth import require_bearer_token
 from app.models.index_registry import IndexRegistry
 from app.models.schemas import (
@@ -14,6 +14,7 @@ from app.models.schemas import (
     IndexRegistryResponse,
     IndexRegistryUpdate,
 )
+from app.services.auto_describe import generate_index_description
 from app.services.pinecone_service import get_factory
 
 logger = logging.getLogger(__name__)
@@ -29,6 +30,29 @@ def _parse_index_id(index_id: str) -> uuid.UUID:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="Invalid index_id",
         )
+
+
+async def _auto_describe_and_save(index_id: uuid.UUID) -> None:
+    """Background task: regenerate description + sample queries for an index."""
+    db = SessionLocal()
+    try:
+        entry = db.query(IndexRegistry).filter(IndexRegistry.id == index_id).first()
+        if not entry:
+            return
+        try:
+            result = await generate_index_description(
+                entry.index_name, entry.project_id, entry.dimension
+            )
+            entry.domain_description = result["domain_description"]
+            entry.sample_queries = result["sample_queries"]
+            db.commit()
+        except Exception as exc:
+            logger.warning(
+                "auto-describe failed for %s (%s): %s",
+                entry.index_name, index_id, exc,
+            )
+    finally:
+        db.close()
 
 
 @router.get("/indexes")
@@ -53,6 +77,7 @@ async def list_indexes(
 @router.post("/indexes", status_code=status.HTTP_201_CREATED)
 async def create_index(
     payload: IndexRegistryCreate,
+    background_tasks: BackgroundTasks,
     token: str = Depends(require_bearer_token),
     db: Session = Depends(get_db),
 ) -> IndexRegistryResponse:
@@ -73,6 +98,11 @@ async def create_index(
     db.add(entry)
     db.commit()
     db.refresh(entry)
+
+    # Auto-describe in the background if the user didn't provide one
+    if not entry.domain_description.strip():
+        background_tasks.add_task(_auto_describe_and_save, entry.id)
+
     return IndexRegistryResponse.model_validate(entry)
 
 
@@ -116,6 +146,68 @@ async def delete_index(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Index not found")
     entry.is_active = False
     db.commit()
+
+
+@router.post("/indexes/{index_id}/auto-describe")
+async def auto_describe_index(
+    index_id: str,
+    token: str = Depends(require_bearer_token),
+    db: Session = Depends(get_db),
+) -> IndexRegistryResponse:
+    entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
+    if not entry:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Index not found")
+
+    try:
+        result = await generate_index_description(
+            entry.index_name, entry.project_id, entry.dimension
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Auto-describe failed: {exc}",
+        )
+
+    entry.domain_description = result["domain_description"]
+    entry.sample_queries = result["sample_queries"]
+    db.commit()
+    db.refresh(entry)
+    return IndexRegistryResponse.model_validate(entry)
+
+
+@router.post("/indexes/auto-describe-all")
+async def auto_describe_all(
+    token: str = Depends(require_bearer_token),
+    db: Session = Depends(get_db),
+    only_empty: bool = True,
+) -> dict:
+    query = db.query(IndexRegistry)
+    if only_empty:
+        query = query.filter(IndexRegistry.domain_description == "")
+    entries = query.all()
+
+    succeeded: list[str] = []
+    failed: list[dict] = []
+    for entry in entries:
+        try:
+            result = await generate_index_description(
+                entry.index_name, entry.project_id, entry.dimension
+            )
+            entry.domain_description = result["domain_description"]
+            entry.sample_queries = result["sample_queries"]
+            db.commit()
+            succeeded.append(entry.index_name)
+        except Exception as exc:
+            db.rollback()
+            failed.append({"index_name": entry.index_name, "error": str(exc)})
+            logger.warning("auto-describe-all failed for %s: %s", entry.index_name, exc)
+
+    return {
+        "succeeded": succeeded,
+        "failed": failed,
+        "succeeded_count": len(succeeded),
+        "failed_count": len(failed),
+    }
 
 
 @router.post("/discover")

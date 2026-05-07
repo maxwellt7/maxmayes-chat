@@ -65,3 +65,8 @@ class DiscoveredIndex(BaseModel):
     dimension: int
     metric: str
     already_in_registry: bool
+
+
+class AutoDescribeResult(BaseModel):
+    domain_description: str
+    sample_queries: list[str]
