@@ -172,8 +172,11 @@ async def run_pipeline(
     # Step C: retrieve
     factory = get_factory()
     vector = await asyncio.to_thread(generate_embedding, optimized, registry_entry.dimension)
+    # Pass namespace list so indexes that store data in named namespaces are queried correctly
+    ns_dict = registry_entry.namespaces or {}
+    namespaces = list(ns_dict.keys()) if ns_dict else None
     try:
-        chunks = await asyncio.to_thread(retrieve, factory, index_name, project_id, vector, 10)
+        chunks = await asyncio.to_thread(retrieve, factory, index_name, project_id, vector, 10, namespaces)
     except Exception as exc:
         _log.warning("retrieve failed for %s/%s: %s", project_id, index_name, exc)
         # Auto-deactivate the broken index so the router stops choosing it
@@ -202,8 +205,10 @@ async def run_pipeline(
                     extra_vector = await asyncio.to_thread(
                         generate_embedding, optimized, candidate_entry.dimension
                     )
+                    cand_ns_dict = candidate_entry.namespaces or {}
+                    cand_namespaces = list(cand_ns_dict.keys()) if cand_ns_dict else None
                     extra_chunks = await asyncio.to_thread(
-                        retrieve, factory, cand_index, cand_project, extra_vector, 5
+                        retrieve, factory, cand_index, cand_project, extra_vector, 5, cand_namespaces
                     )
                     chunks = sorted(chunks + extra_chunks, key=lambda c: c["score"], reverse=True)[:10]
                 except Exception as exc:
