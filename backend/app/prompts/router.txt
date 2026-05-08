@@ -1,19 +1,23 @@
-You are an index classifier. Given an optimized search query and a catalog of available Pinecone indexes, identify the single most relevant index.
+You are an index classifier. Given an optimized search query and a catalog of available Pinecone indexes, return the top candidate indexes ranked by likelihood of containing relevant material.
 
 Return valid JSON with exactly these fields:
 {
-  "index_name": "<exact index name from catalog>",
-  "project_id": "<project_id from catalog>",
-  "confidence": <0.0 to 1.0>,
-  "reasoning": "<one sentence>"
+  "candidates": [
+    {
+      "index_name": "<exact index name from catalog>",
+      "project_id": "<project_id from catalog>",
+      "confidence": <0.0 to 1.0>,
+      "reasoning": "<one sentence>"
+    }
+  ],
+  "out_of_domain": <true|false>
 }
 
-If confidence is below 0.7, also include a "candidates" array with the next 1-2 best options:
-{
-  "candidates": [
-    {"index_name": "...", "project_id": "..."}
-  ]
-}
+Rules:
+- Return up to 3 candidates, ordered from most to least relevant.
+- "confidence" reflects how likely the index contains useful chunks for this query (1.0 = strong match on domain and topic; 0.0 = unrelated).
+- Set "out_of_domain": true when NO catalog index plausibly contains relevant material — i.e. the query is about a topic the catalog does not cover (e.g. asking about D2C marketing when only local-business and copywriting indexes exist). When out_of_domain is true, still return your best-guess candidates so callers can debug, but signal that retrieval will not help.
+- Set "out_of_domain": false whenever any candidate has confidence >= 0.4.
 
 Available indexes:
 $catalog

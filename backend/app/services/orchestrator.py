@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -22,6 +23,20 @@ _MODEL_OPTIMIZER = "gpt-4.1-mini"
 _MODEL_ROUTER = "gpt-4.1-mini"
 _MODEL_VERIFIER = "gpt-4.1-mini"
 _MODEL_SYNTHESIZER = "claude-sonnet-4-6"
+
+# Reciprocal Rank Fusion constant — 60 is the value from the original Cormack et al. paper
+# and works well across most heterogeneous-source ranking scenarios.
+_RRF_K = 60
+
+# How many indexes to fan retrieval out to. Higher than 3 yields diminishing returns
+# and inflates Pinecone cost.
+_TOP_INDEXES = 3
+
+# Per-index top_k for retrieval — first/second/third by router confidence.
+_PER_INDEX_TOP_K = (10, 5, 5)
+
+# Final chunks fed into the synthesizer after rerank.
+_FINAL_TOP_N = 8
 
 
 def _load_prompt(name: str) -> str:
@@ -77,7 +92,52 @@ async def route_query(
         temperature=0,
         response_format={"type": "json_object"},
     )
-    return json.loads(response.choices[0].message.content)
+    raw = json.loads(response.choices[0].message.content)
+    return _normalize_router_response(raw)
+
+
+def _normalize_router_response(raw: dict[str, Any]) -> dict[str, Any]:
+    """Accept both the new {candidates, out_of_domain} schema and the legacy
+    {index_name, project_id, confidence, candidates?} shape so a router that
+    momentarily ignores the schema doesn't crash the pipeline."""
+    candidates = raw.get("candidates")
+    if not isinstance(candidates, list) or not candidates:
+        # Legacy shape — promote the top-level fields to a single candidate.
+        if raw.get("index_name") and raw.get("project_id"):
+            candidates = [
+                {
+                    "index_name": raw["index_name"],
+                    "project_id": raw["project_id"],
+                    "confidence": float(raw.get("confidence", 0.0) or 0.0),
+                    "reasoning": raw.get("reasoning", ""),
+                }
+            ]
+        else:
+            candidates = []
+
+    cleaned: list[dict[str, Any]] = []
+    for c in candidates:
+        if not isinstance(c, dict):
+            continue
+        name = c.get("index_name")
+        project = c.get("project_id")
+        if not name or not project:
+            continue
+        cleaned.append(
+            {
+                "index_name": name,
+                "project_id": str(project),
+                "confidence": float(c.get("confidence", 0.0) or 0.0),
+                "reasoning": c.get("reasoning", ""),
+            }
+        )
+
+    out_of_domain = bool(raw.get("out_of_domain", False))
+    if not out_of_domain and cleaned:
+        # Defensive: enforce the rule from the prompt server-side.
+        out_of_domain = max(c["confidence"] for c in cleaned) < 0.4
+
+    return {"candidates": cleaned, "out_of_domain": out_of_domain}
 
 
 async def verify_accuracy(
@@ -123,6 +183,111 @@ async def _fetch_voice_profile(top_k: int = 5) -> str:
         return ""
 
 
+def _chunk_key(chunk: dict[str, Any]) -> str:
+    """Stable identity for RRF dedup — Pinecone matches don't carry IDs through
+    `retrieve`, so hash the chunk text. Texts collide only when they're truly
+    identical, which is the deduplication we want anyway."""
+    text = chunk.get("text") or ""
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()
+
+
+def _rrf_merge(
+    ranked_lists: list[list[dict[str, Any]]], k: int = _RRF_K
+) -> list[dict[str, Any]]:
+    """Reciprocal Rank Fusion across multiple ranked lists.
+
+    Pinecone scores aren't comparable across indexes — different embedding spaces,
+    sometimes different dimensions. RRF discards the raw scores and uses only
+    rank position, which is what makes it robust for cross-source merging.
+    """
+    scores: dict[str, float] = {}
+    chunks: dict[str, dict[str, Any]] = {}
+    for ranked in ranked_lists:
+        for rank, chunk in enumerate(ranked):
+            key = _chunk_key(chunk)
+            scores[key] = scores.get(key, 0.0) + 1.0 / (k + rank + 1)
+            # Keep the earlier-seen copy so source attribution stays stable.
+            chunks.setdefault(key, chunk)
+    return sorted(chunks.values(), key=lambda c: scores[_chunk_key(c)], reverse=True)
+
+
+async def _rerank_chunks(
+    query: str, chunks: list[dict[str, Any]], top_n: int = _FINAL_TOP_N
+) -> list[dict[str, Any]]:
+    """Cross-encoder rerank via Cohere. Falls back to the input ordering if the
+    API key is missing or the call fails — RRF-only is still a usable signal."""
+    if not chunks:
+        return []
+    if not settings.cohere_api_key:
+        return chunks[:top_n]
+    try:
+        import cohere
+
+        client = cohere.AsyncClientV2(api_key=settings.cohere_api_key)
+        response = await client.rerank(
+            model="rerank-v3.5",
+            query=query,
+            documents=[c["text"] for c in chunks],
+            top_n=min(top_n, len(chunks)),
+        )
+        return [chunks[result.index] for result in response.results]
+    except Exception as exc:
+        _log.warning("rerank failed, falling back to RRF order: %s", exc)
+        return chunks[:top_n]
+
+
+async def _retrieve_one(
+    factory: Any,
+    db: Session,
+    candidate: dict[str, Any],
+    optimized: str,
+    top_k: int,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Retrieve top_k chunks from a single candidate index, handling the same
+    auto-deactivate-on-failure path the original pipeline used."""
+    registry_entry = (
+        db.query(IndexRegistry)
+        .filter(
+            IndexRegistry.index_name == candidate["index_name"],
+            IndexRegistry.project_id == candidate["project_id"],
+        )
+        .first()
+    )
+    if not registry_entry:
+        return None, []
+
+    try:
+        vector = await asyncio.to_thread(
+            generate_embedding, optimized, registry_entry.dimension
+        )
+        ns_dict = registry_entry.namespaces or {}
+        namespaces = list(ns_dict.keys()) if ns_dict else None
+        chunks = await asyncio.to_thread(
+            retrieve,
+            factory,
+            registry_entry.index_name,
+            registry_entry.project_id,
+            vector,
+            top_k,
+            namespaces,
+        )
+        # Tag each chunk with its source so downstream stages can keep attribution.
+        for c in chunks:
+            c["source_index"] = registry_entry.index_name
+            c["source_project"] = registry_entry.project_id
+        return registry_entry, chunks
+    except Exception as exc:
+        _log.warning(
+            "retrieve failed for %s/%s: %s",
+            registry_entry.project_id,
+            registry_entry.index_name,
+            exc,
+        )
+        registry_entry.is_active = False
+        db.commit()
+        return registry_entry, []
+
+
 async def run_pipeline(
     raw_query: str, db: Session
 ) -> AsyncGenerator[str, None]:
@@ -150,71 +315,52 @@ async def run_pipeline(
         return
 
     route_result = await route_query(optimized, catalog)
-    index_name = route_result.get("index_name")
-    project_id = route_result.get("project_id")
+    candidates = route_result["candidates"][:_TOP_INDEXES]
 
-    if not index_name or not project_id:
+    if not candidates:
         yield "I couldn't determine which knowledge base to search. Please rephrase your question."
         return
 
-    registry_entry = (
-        db.query(IndexRegistry)
-        .filter(
-            IndexRegistry.index_name == index_name,
-            IndexRegistry.project_id == project_id,
+    # Step B.5: pre-retrieval out-of-domain gate
+    # If the router judged none of the indexes plausibly contain relevant material,
+    # skip retrieval entirely and refuse honestly. This avoids the failure mode
+    # where the verifier later synthesizes a hedged-but-wrong answer from
+    # adjacent-but-irrelevant chunks.
+    if route_result["out_of_domain"]:
+        yield (
+            "That topic isn't in my knowledge base — what I have is centered on "
+            "different domains. Wrong map for the territory. If you can rephrase "
+            "around something I do cover, I'm happy to dig in."
         )
-        .first()
-    )
-    if not registry_entry:
-        yield "I couldn't find the target index in the registry. Please check the admin dashboard."
         return
 
-    # Step C: retrieve
+    # Step C: retrieve from top-N candidates in parallel
     factory = get_factory()
-    vector = await asyncio.to_thread(generate_embedding, optimized, registry_entry.dimension)
-    # Pass namespace list so indexes that store data in named namespaces are queried correctly
-    ns_dict = registry_entry.namespaces or {}
-    namespaces = list(ns_dict.keys()) if ns_dict else None
-    try:
-        chunks = await asyncio.to_thread(retrieve, factory, index_name, project_id, vector, 10, namespaces)
-    except Exception as exc:
-        _log.warning("retrieve failed for %s/%s: %s", project_id, index_name, exc)
-        # Auto-deactivate the broken index so the router stops choosing it
-        registry_entry.is_active = False
-        db.commit()
-        yield "I tried to consult one of my indexes, but it appears to have been moved or removed. I've deactivated it — please try your question again."
+    per_index_k = list(_PER_INDEX_TOP_K)
+    while len(per_index_k) < len(candidates):
+        per_index_k.append(per_index_k[-1])
+
+    retrieval_tasks = [
+        _retrieve_one(factory, db, candidate, optimized, per_index_k[i])
+        for i, candidate in enumerate(candidates)
+    ]
+    retrieval_results = await asyncio.gather(*retrieval_tasks)
+
+    ranked_lists = [chunks for _, chunks in retrieval_results if chunks]
+    if not ranked_lists:
+        yield (
+            "I tried to consult my indexes, but none of the candidate sources "
+            "returned results. Please try rephrasing your question."
+        )
         return
 
-    # Multi-index fallback for low confidence
-    if route_result.get("confidence", 1.0) < 0.7 and route_result.get("candidates"):
-        for candidate in route_result["candidates"][:2]:
-            cand_index = candidate.get("index_name")
-            cand_project = candidate.get("project_id")
-            if not cand_index or not cand_project:
-                continue
-            candidate_entry = (
-                db.query(IndexRegistry)
-                .filter(
-                    IndexRegistry.index_name == cand_index,
-                    IndexRegistry.project_id == cand_project,
-                )
-                .first()
-            )
-            if candidate_entry:
-                try:
-                    extra_vector = await asyncio.to_thread(
-                        generate_embedding, optimized, candidate_entry.dimension
-                    )
-                    cand_ns_dict = candidate_entry.namespaces or {}
-                    cand_namespaces = list(cand_ns_dict.keys()) if cand_ns_dict else None
-                    extra_chunks = await asyncio.to_thread(
-                        retrieve, factory, cand_index, cand_project, extra_vector, 5, cand_namespaces
-                    )
-                    chunks = sorted(chunks + extra_chunks, key=lambda c: c["score"], reverse=True)[:10]
-                except Exception as exc:
-                    _log.warning("candidate retrieve failed for %s/%s: %s", cand_project, cand_index, exc)
-                    candidate_entry.is_active = False
-                    db.commit()
+    # Step C.5: merge candidate result lists with Reciprocal Rank Fusion.
+    # Raw Pinecone scores aren't comparable across indexes (different embedding
+    # models, sometimes different dimensions), so we use rank-only fusion.
+    fused = _rrf_merge(ranked_lists)
+
+    # Step C.6: cross-encoder rerank — biggest single precision lever.
+    chunks = await _rerank_chunks(optimized, fused, top_n=_FINAL_TOP_N)
 
     # Step D: verify
     verification = await verify_accuracy(raw_query, chunks)
