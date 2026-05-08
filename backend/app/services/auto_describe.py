@@ -39,7 +39,8 @@ def _require_openai_key() -> str:
 
 
 async def generate_index_description(
-    index_name: str, project_id: str, dimension: int
+    index_name: str, project_id: str, dimension: int,
+    namespaces: list[str] | None = None,
 ) -> dict:
     """Sample the index and use an LLM to write a description + sample queries."""
     factory = get_factory()
@@ -50,7 +51,22 @@ async def generate_index_description(
         "introduction overview summary main topic key concept",
         dimension,
     )
-    chunks = await asyncio.to_thread(retrieve, factory, index_name, project_id, vector, 8)
+    chunks = await asyncio.to_thread(retrieve, factory, index_name, project_id, vector, 8, namespaces)
+
+    # If no chunks from the default namespace, auto-detect namespaces via index stats.
+    if not chunks and namespaces is None:
+        try:
+            client = factory.get_client(project_id)
+            index = client.Index(index_name)
+            stats = await asyncio.to_thread(index.describe_index_stats)
+            all_ns = list(stats.namespaces.keys())
+            non_default_ns = [ns for ns in all_ns if ns]
+            if non_default_ns:
+                chunks = await asyncio.to_thread(
+                    retrieve, factory, index_name, project_id, vector, 8, non_default_ns
+                )
+        except Exception as exc:
+            logger.warning("namespace auto-detect failed for %s: %s", index_name, exc)
 
     if not chunks:
         return {

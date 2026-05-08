@@ -40,8 +40,10 @@ async def _auto_describe_and_save(index_id: uuid.UUID) -> None:
         if not entry:
             return
         try:
+            ns_dict = entry.namespaces or {}
+            namespaces = list(ns_dict.keys()) if ns_dict else None
             result = await generate_index_description(
-                entry.index_name, entry.project_id, entry.dimension
+                entry.index_name, entry.project_id, entry.dimension, namespaces
             )
             entry.domain_description = result["domain_description"]
             entry.sample_queries = result["sample_queries"]
@@ -158,9 +160,11 @@ async def auto_describe_index(
     if not entry:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Index not found")
 
+    ns_dict = entry.namespaces or {}
+    namespaces = list(ns_dict.keys()) if ns_dict else None
     try:
         result = await generate_index_description(
-            entry.index_name, entry.project_id, entry.dimension
+            entry.index_name, entry.project_id, entry.dimension, namespaces
         )
     except Exception as exc:
         raise HTTPException(
@@ -190,8 +194,10 @@ async def auto_describe_all(
     failed: list[dict] = []
     for entry in entries:
         try:
+            ns_dict = entry.namespaces or {}
+            namespaces = list(ns_dict.keys()) if ns_dict else None
             result = await generate_index_description(
-                entry.index_name, entry.project_id, entry.dimension
+                entry.index_name, entry.project_id, entry.dimension, namespaces
             )
             entry.domain_description = result["domain_description"]
             entry.sample_queries = result["sample_queries"]
