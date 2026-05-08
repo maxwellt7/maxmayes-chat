@@ -7,6 +7,14 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+psycopg://postgres:postgres@localhost:5432/postgres"
     cors_allow_origin: str = "http://localhost:3000"
 
+    @property
+    def cors_origins(self) -> list[str]:
+        return [
+            o.strip()
+            for o in self.cors_allow_origin.split(",")
+            if o.strip()
+        ]
+
     clerk_secret_key: str = ""
 
     pinecone_api_key_1: str = ""
