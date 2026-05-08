@@ -1,15 +1,20 @@
 "use client";
 
-import { KeyboardEvent, useRef, useState } from "react";
+import { KeyboardEvent, useEffect, useRef, useState } from "react";
 
 type Props = {
   onSend: (message: string) => void;
   disabled?: boolean;
+  resetToken?: number;
 };
 
-export function ChatInput({ onSend, disabled }: Props) {
+export function ChatInput({ onSend, disabled, resetToken }: Props) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+
+  useEffect(() => {
+    setValue("");
+  }, [resetToken]);
 
   const submit = () => {
     const trimmed = value.trim();
@@ -19,11 +24,10 @@ export function ChatInput({ onSend, disabled }: Props) {
   };
 
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault();
       submit();
     }
-    // plain Enter falls through — adds newline naturally
   };
 
   return (

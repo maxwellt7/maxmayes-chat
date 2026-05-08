@@ -519,10 +519,60 @@ h3 {
   font-size: 1.0625rem;
   line-height: 1.65;
   color: var(--ink);
-  white-space: pre-wrap;
   word-break: break-word;
   font-variation-settings: "opsz" 14;
   font-weight: 400;
+}
+
+.bubble-content > :first-child {
+  margin-top: 0;
+}
+
+.bubble-content > :last-child {
+  margin-bottom: 0;
+}
+
+.bubble-content p {
+  margin: 0 0 0.75rem;
+}
+
+.bubble-content ul,
+.bubble-content ol {
+  margin: 0 0 0.75rem;
+  padding-left: 1.2rem;
+}
+
+.bubble-content li + li {
+  margin-top: 0.25rem;
+}
+
+.bubble-content a {
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.bubble-content code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: rgba(26, 22, 18, 0.06);
+  border: 1px solid var(--rule-soft);
+  border-radius: 2px;
+  padding: 0.08rem 0.3rem;
+}
+
+.bubble-content pre {
+  margin: 0 0 0.75rem;
+  background: rgba(26, 22, 18, 0.06);
+  border: 1px solid var(--rule-soft);
+  border-radius: 4px;
+  padding: 0.65rem 0.8rem;
+  overflow-x: auto;
+}
+
+.bubble-content pre code {
+  border: none;
+  background: transparent;
+  padding: 0;
 }
 
 .message-user .bubble-content {

@@ -32,6 +32,7 @@ export default function ChatPage() {
   const [error, setError] = useState<string | null>(null);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [inputResetToken, setInputResetToken] = useState(0);
   const sessionId = useRef<string>(crypto.randomUUID());
 
   // Load sidebar sessions on mount
@@ -56,6 +57,7 @@ export default function ChatPage() {
     setError(null);
     setStreamingResponse(null);
     setIsStreaming(false);
+    setInputResetToken((prev) => prev + 1);
   }, []);
 
   const loadSession = useCallback(async (sid: string) => {
@@ -187,7 +189,11 @@ export default function ChatPage() {
         )}
 
         {error && <p className="chat-error">{error}</p>}
-        <ChatInput onSend={handleSend} disabled={isStreaming} />
+        <ChatInput
+          onSend={handleSend}
+          disabled={isStreaming}
+          resetToken={inputResetToken}
+        />
       </div>
     </div>
   );

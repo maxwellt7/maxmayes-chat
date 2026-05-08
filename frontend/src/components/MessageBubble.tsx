@@ -1,5 +1,9 @@
 "use client";
 
+import ReactMarkdown from "react-markdown";
+import remarkBreaks from "remark-breaks";
+import remarkGfm from "remark-gfm";
+
 type Props = {
   role: "user" | "assistant";
   content: string;
@@ -16,7 +20,9 @@ export function MessageBubble({ role, content, isStreaming }: Props) {
     <div className={`message-bubble message-${role}`}>
       <div className="label">{ROLE_LABEL[role]}</div>
       <div className="bubble-content">
-        {content}
+        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+          {content}
+        </ReactMarkdown>
         {isStreaming && <span className="streaming-cursor" />}
       </div>
     </div>
