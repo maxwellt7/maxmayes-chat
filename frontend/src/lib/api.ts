@@ -11,6 +11,22 @@ function apiUrl(path: string): string {
 
 // ---- Chat ----
 
+export async function listChatSessions(token: string) {
+  const res = await fetch(apiUrl("/api/chat/sessions"), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`Failed to fetch sessions: ${res.status}`);
+  return res.json() as Promise<{
+    sessions: {
+      session_id: string;
+      preview: string;
+      message_count: number;
+      created_at: string;
+      last_message_at: string;
+    }[];
+  }>;
+}
+
 export async function getChatHistory(token: string, sessionId: string) {
   const res = await fetch(apiUrl(`/api/chat/history/${sessionId}`), {
     headers: { Authorization: `Bearer ${token}` },
