@@ -63,6 +63,53 @@ async def chat_endpoint(
     )
 
 
+@router.get("/sessions")
+async def list_sessions(
+    token: str = Depends(require_bearer_token),
+    db: Session = Depends(get_db),
+) -> dict:
+    from sqlalchemy import func
+    user_id = extract_user_id(token)
+    rows = (
+        db.query(
+            ChatMessage.session_id,
+            func.min(ChatMessage.created_at).label("created_at"),
+            func.max(ChatMessage.created_at).label("last_message_at"),
+            func.count(ChatMessage.id).label("message_count"),
+        )
+        .filter(ChatMessage.user_id == user_id)
+        .group_by(ChatMessage.session_id)
+        .order_by(func.max(ChatMessage.created_at).desc())
+        .limit(50)
+        .all()
+    )
+    previews = {}
+    for row in rows:
+        first = (
+            db.query(ChatMessage.content)
+            .filter(
+                ChatMessage.session_id == row.session_id,
+                ChatMessage.user_id == user_id,
+                ChatMessage.role == "user",
+            )
+            .order_by(ChatMessage.created_at)
+            .first()
+        )
+        previews[row.session_id] = (first[0][:80] if first else "") if first else ""
+    return {
+        "sessions": [
+            {
+                "session_id": row.session_id,
+                "preview": previews.get(row.session_id, ""),
+                "message_count": row.message_count,
+                "created_at": row.created_at.isoformat(),
+                "last_message_at": row.last_message_at.isoformat(),
+            }
+            for row in rows
+        ]
+    }
+
+
 @router.get("/history/{session_id}")
 async def get_history(
     session_id: str,
