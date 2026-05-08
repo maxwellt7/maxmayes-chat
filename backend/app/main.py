@@ -21,10 +21,12 @@ app.include_router(admin.router)
 
 
 @app.get("/healthz", response_model=HealthResponse)
+@app.get("/health", response_model=HealthResponse)
 async def healthcheck() -> HealthResponse:
     return HealthResponse(status="ok")
 
 
 @app.post("/healthz")
+@app.post("/health")
 async def healthcheck_post() -> HealthResponse:
     return HealthResponse(status="ok")
