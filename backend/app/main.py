@@ -2,7 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
-from app.models import chat, index_registry  # noqa: F401 — registers with Base.metadata
+import app.models.chat  # noqa: F401
+import app.models.index_registry  # noqa: F401
 from app.models.schemas import HealthResponse
 from app.routers import admin, chat as chat_router
 

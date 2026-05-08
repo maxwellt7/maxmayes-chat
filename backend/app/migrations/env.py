@@ -9,7 +9,8 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from app.config import normalized_database_url
 from app.db.database import Base
-from app.models import index_registry, chat  # noqa: F401 — registers models with Base
+import app.models.index_registry  # noqa: F401
+import app.models.chat  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", normalized_database_url())
