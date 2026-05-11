@@ -2,7 +2,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from app.services.embedding_service import generate_embedding
+from app.services.embedding_service import generate_embedding, generate_embedding_cohere, generate_embeddings_cohere_batch
 
 
 def _patch_settings(monkeypatch, **keys: str) -> None:
@@ -79,9 +79,6 @@ def test_missing_cohere_key_raises(monkeypatch):
         generate_embedding("test query", 1024)
 
 
-from app.services.embedding_service import generate_embedding_cohere
-
-
 def test_generate_embedding_cohere_returns_list_of_floats(monkeypatch):
     from app.config import settings
     monkeypatch.setattr(settings, "cohere_api_key", "test-cohere")
@@ -92,3 +89,22 @@ def test_generate_embedding_cohere_returns_list_of_floats(monkeypatch):
         result = generate_embedding_cohere("test text", input_type="search_query")
         assert isinstance(result, list)
         assert len(result) == 1024
+
+
+def test_generate_embeddings_cohere_batch_returns_list_of_embeddings(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "cohere_api_key", "test-cohere")
+    with patch("app.services.embedding_service.cohere.ClientV2") as MockClient:
+        mock_resp = MagicMock()
+        mock_resp.embeddings.float = [[0.1] * 1024, [0.2] * 1024, [0.3] * 1024]
+        MockClient.return_value.embed.return_value = mock_resp
+        result = generate_embeddings_cohere_batch(["a", "b", "c"])
+        assert len(result) == 3
+        assert all(len(emb) == 1024 for emb in result)
+
+
+def test_generate_embeddings_cohere_batch_rejects_oversized_batch(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "cohere_api_key", "test-cohere")
+    with pytest.raises(ValueError, match="96"):
+        generate_embeddings_cohere_batch(["x"] * 97)
