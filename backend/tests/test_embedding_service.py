@@ -77,3 +77,18 @@ def test_missing_cohere_key_raises(monkeypatch):
     _patch_settings(monkeypatch, cohere_api_key="")
     with pytest.raises(ValueError, match="COHERE_API_KEY is not configured"):
         generate_embedding("test query", 1024)
+
+
+from app.services.embedding_service import generate_embedding_cohere
+
+
+def test_generate_embedding_cohere_returns_list_of_floats(monkeypatch):
+    from app.config import settings
+    monkeypatch.setattr(settings, "cohere_api_key", "test-cohere")
+    with patch("app.services.embedding_service.cohere.ClientV2") as MockClient:
+        mock_resp = MagicMock()
+        mock_resp.embeddings.float = [[0.1] * 1024]
+        MockClient.return_value.embed.return_value = mock_resp
+        result = generate_embedding_cohere("test text", input_type="search_query")
+        assert isinstance(result, list)
+        assert len(result) == 1024

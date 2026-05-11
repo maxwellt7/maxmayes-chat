@@ -39,3 +39,21 @@ def generate_embedding(query: str, dimension: int) -> list[float]:
         return response.embeddings[0]
 
     raise ValueError(f"Unsupported embedding dimension: {dimension}. Supported: 1024, 1536, 2048")
+
+
+def generate_embedding_cohere(text, input_type="search_query", model="embed-v3.0"):
+    if not settings.cohere_api_key:
+        raise ValueError("COHERE_API_KEY is not configured")
+    client = cohere.ClientV2(api_key=settings.cohere_api_key)
+    resp = client.embed(texts=[text], model=model, input_type=input_type, embedding_types=["float"])
+    return resp.embeddings.float[0]
+
+
+def generate_embeddings_cohere_batch(texts, input_type="search_document", model="embed-v3.0"):
+    if not settings.cohere_api_key:
+        raise ValueError("COHERE_API_KEY is not configured")
+    if len(texts) > 96:
+        raise ValueError(f"Cohere embed batch limit is 96, got {len(texts)}")
+    client = cohere.ClientV2(api_key=settings.cohere_api_key)
+    resp = client.embed(texts=texts, model=model, input_type=input_type, embedding_types=["float"])
+    return resp.embeddings.float
