@@ -33,3 +33,9 @@ class IndexRegistry(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+    domain: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    public_safe_default: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    agent_module_path: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="active")
