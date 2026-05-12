@@ -224,6 +224,72 @@ async def run_ingest_job(job_id: str) -> None:
         db.close()
 
 
+async def snapshot_to_legacy(
+    source_index: str,
+    source_project: str,
+    archive_index: str,
+) -> int:
+    """Copy raw chunks from source to legacy-archive without re-chunking or
+    re-embedding (zero-loss safety backup per NFR-DATA-1)."""
+    factory = get_factory()
+    source = factory.get_client(source_project).Index(source_index)
+    archive = factory.get_client(source_project).Index(archive_index)
+
+    cursor: str | None = None
+    total = 0
+    while True:
+        page = source.list_paginated(limit=100, pagination_token=cursor)
+        ids = [v.id for v in page.vectors]
+        if ids:
+            fetched = source.fetch(ids=ids)
+            vectors = [
+                {
+                    "id": f"{source_index}__{vid}",
+                    "values": v.values or [0.0],
+                    "metadata": {
+                        **(v.metadata or {}),
+                        "_source_index": source_index,
+                    },
+                }
+                for vid, v in fetched.vectors.items()
+            ]
+            if vectors:
+                archive.upsert(vectors=vectors, namespace=source_index)
+                total += len(vectors)
+        cursor = page.pagination.next if page.pagination else None
+        if not cursor:
+            break
+    return total
+
+
+async def snapshot_all_active_to_legacy(archive_index: str) -> dict[str, int]:
+    """Snapshot every active index in the registry. Returns counts per
+    source index. Used as the Phase-0 safety backup before re-ingest runs."""
+    db: Session = SessionLocal()
+    try:
+        active = (
+            db.query(IndexRegistry)
+            .filter(IndexRegistry.is_active == True)  # noqa: E712
+            .all()
+        )
+        results: dict[str, int] = {}
+        for entry in active:
+            try:
+                count = await snapshot_to_legacy(
+                    entry.index_name, entry.project_id, archive_index
+                )
+                results[entry.index_name] = count
+                _log.info(
+                    "snapshotted %s: %d chunks", entry.index_name, count
+                )
+            except Exception as exc:
+                _log.error("snapshot failed for %s: %s", entry.index_name, exc)
+                results[entry.index_name] = -1
+        return results
+    finally:
+        db.close()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("job_id")
