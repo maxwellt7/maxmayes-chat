@@ -11,7 +11,7 @@ import uuid
 from datetime import date, datetime
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -20,6 +20,7 @@ from app.middleware.admin_role import require_admin_role
 from app.models.index_audit import IndexAudit
 from app.models.ingest_job import IngestJob
 from app.scripts.audit_indexes import run_audit
+from app.scripts.reingest import run_ingest_job
 
 router = APIRouter(prefix="/api/admin", tags=["admin", "audit"])
 
@@ -148,3 +149,19 @@ def approve_dispositions(
         created_jobs=created_jobs,
         updated_rows=len(updates),
     )
+
+
+@router.post("/ingest/{job_id}/run", status_code=202)
+async def trigger_ingest(
+    job_id: uuid.UUID,
+    background: BackgroundTasks,
+    _admin: dict = Depends(require_admin_role),
+) -> dict:
+    """Kick off (or resume) an ingest job in the background.
+
+    Returns 202 immediately; long-running work proceeds asynchronously. The
+    job's status can be polled via ``GET /api/admin/ingest/{job_id}`` (not
+    in v1 — clients can query the DB or watch logs).
+    """
+    background.add_task(run_ingest_job, str(job_id))
+    return {"job_id": str(job_id), "status": "started"}
