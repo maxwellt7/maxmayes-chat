@@ -103,3 +103,134 @@ async def enrich_metadata(chunk_text: str) -> dict[str, Any]:
     return await call_openai_json(
         model=_METADATA_MODEL, system="", user=prompt, temperature=0
     )
+
+
+async def run_ingest_job(job_id: str) -> None:
+    """Execute or resume an ingest job. Idempotent at the chunk-batch level.
+
+    Pipeline per job:
+      1. fetch source chunks
+      2. reconstruct documents by source_id
+      3. semantic re-chunk each document
+      4. for each Cohere-batch of new chunks: enrich metadata, embed, upsert
+      5. advance processed_chunks per batch
+      6. halt with status='failed' if failure rate > 5%
+    """
+    db: Session = SessionLocal()
+    try:
+        job = db.query(IngestJob).filter(
+            IngestJob.id == uuid.UUID(job_id)
+        ).first()
+        if not job:
+            raise ValueError(f"Job {job_id} not found")
+        if job.status == "completed":
+            _log.info("Job %s already completed", job_id)
+            return
+
+        job.status = "running"
+        if not job.started_at:
+            job.started_at = datetime.utcnow()
+        db.commit()
+
+        try:
+            project_id = job.config.get("source_project_id", "1")
+            source_chunks = await fetch_source_chunks(job.source_index, project_id)
+            documents = reconstruct_documents(source_chunks)
+
+            new_chunks: list[dict[str, Any]] = []
+            for sid, doc_text in documents.items():
+                if not doc_text.strip():
+                    continue
+                pieces = semantic_chunk_text(doc_text)
+                for pos, piece in enumerate(pieces):
+                    new_chunks.append({
+                        "source_id": sid,
+                        "chunk_position": pos,
+                        "doc_total_chunks": len(pieces),
+                        "text": piece,
+                    })
+
+            job.total_chunks = len(new_chunks)
+            db.commit()
+
+            factory = get_factory()
+            target = factory.get_client(project_id).Index(job.target_index)
+
+            start = job.processed_chunks
+            for batch_start in range(start, len(new_chunks), _BATCH_SIZE):
+                batch = new_chunks[batch_start:batch_start + _BATCH_SIZE]
+                texts = [c["text"] for c in batch]
+                embeddings = generate_embeddings_cohere_batch(
+                    texts, input_type="search_document"
+                )
+
+                vectors = []
+                for c, emb in zip(batch, embeddings):
+                    try:
+                        meta = await enrich_metadata(c["text"])
+                    except Exception as exc:
+                        _log.warning("metadata enrich failed: %s", exc)
+                        meta = {
+                            "topic_tags": [],
+                            "source_type": "other",
+                            "public_safe": False,
+                        }
+                    vid = (
+                        f"{c['source_id']}_{c['chunk_position']}_"
+                        f"{uuid.uuid4().hex[:8]}"
+                    )
+                    domain = job.target_index.replace("max-", "")
+                    full_meta = {
+                        "text": c["text"][:40000],
+                        "source_type": meta.get("source_type", "other"),
+                        "source_id": c["source_id"],
+                        "ingested_at": datetime.utcnow().isoformat(),
+                        "domain": domain,
+                        "namespace": job.target_namespace,
+                        "topic_tags": meta.get("topic_tags", []),
+                        "public_safe": bool(meta.get("public_safe", False)),
+                        "embedding_model": "cohere-embed-v3",
+                        "chunk_position": c["chunk_position"],
+                        "doc_total_chunks": c["doc_total_chunks"],
+                    }
+                    vectors.append({"id": vid, "values": emb, "metadata": full_meta})
+
+                try:
+                    target.upsert(vectors=vectors, namespace=job.target_namespace)
+                    job.processed_chunks = batch_start + len(batch)
+                except Exception as exc:
+                    _log.error("upsert failed at offset %s: %s", batch_start, exc)
+                    job.failed_chunks += len(batch)
+
+                db.commit()
+
+                if (
+                    job.total_chunks
+                    and job.failed_chunks / job.total_chunks > _FAILURE_THRESHOLD
+                ):
+                    raise RuntimeError(
+                        f"Failure rate exceeded {_FAILURE_THRESHOLD * 100:.0f}% threshold"
+                    )
+
+            job.status = "completed"
+            job.completed_at = datetime.utcnow()
+            db.commit()
+        except Exception as exc:
+            job.status = "failed"
+            job.error_message = str(exc)
+            db.commit()
+            raise
+    finally:
+        db.close()
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("job_id")
+    args = parser.parse_args()
+    logging.basicConfig(level=logging.INFO)
+    asyncio.run(run_ingest_job(args.job_id))
+
+
+if __name__ == "__main__":
+    main()
