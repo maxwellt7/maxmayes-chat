@@ -130,3 +130,71 @@ export async function importIndex(
     is_active: false,
   });
 }
+
+// ---- Phase 0 Audit ----
+
+export type Disposition = "KEEP" | "MERGE" | "RE-INGEST" | "ARCHIVE" | "SPLIT";
+
+export interface AuditRow {
+  id: string;
+  index_name: string;
+  project_id: string;
+  record_count: number;
+  embedding_model: string | null;
+  dominant_domain: string | null;
+  topic_tags: string[];
+  sample_chunks: Array<{ text: string; metadata: Record<string, unknown> }>;
+  proposed_disposition: Disposition;
+  proposed_target_index: string | null;
+  approved_disposition: string | null;
+}
+
+export async function fetchLatestAudit(token: string): Promise<AuditRow[]> {
+  const res = await fetch(apiUrl("/api/admin/audit/latest"), {
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`audit fetch failed: ${res.status}`);
+  return res.json();
+}
+
+export async function kickOffAudit(
+  token: string,
+  mode: "dry_run" | "execute"
+): Promise<{ audit_id: string; row_count: number; audit_date: string }> {
+  const res = await fetch(apiUrl("/api/admin/audit"), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ mode }),
+  });
+  if (!res.ok) throw new Error(`audit kickoff failed: ${res.status}`);
+  return res.json();
+}
+
+export async function approveDispositions(
+  token: string,
+  auditDate: string,
+  updates: Array<{
+    audit_row_id: string;
+    approved_disposition: Disposition;
+    approved_target_index?: string | null;
+  }>
+): Promise<{ created_jobs: string[]; updated_rows: number }> {
+  const res = await fetch(
+    apiUrl(`/api/admin/audit/${auditDate}/dispositions`),
+    {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+      body: JSON.stringify(updates),
+    }
+  );
+  if (!res.ok) throw new Error(`dispositions failed: ${res.status}`);
+  return res.json();
+}
+
+export async function triggerIngest(token: string, jobId: string): Promise<void> {
+  const res = await fetch(apiUrl(`/api/admin/ingest/${jobId}/run`), {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+  });
+  if (!res.ok) throw new Error(`ingest trigger failed: ${res.status}`);
+}
