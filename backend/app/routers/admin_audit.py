@@ -1,0 +1,150 @@
+"""Admin endpoints for Phase-0 audit + disposition approval + ingest jobs.
+
+All endpoints require ``publicMetadata.role == "admin"`` on the Clerk JWT
+(enforced via :func:`require_admin_role`). The audit endpoint synchronously
+runs the audit job inside the request — fine at Phase-0 scale (~40 indexes,
+~30 sec). If scale grows, this should move to BackgroundTasks.
+"""
+from __future__ import annotations
+
+import uuid
+from datetime import date, datetime
+from typing import Literal
+
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+
+from app.db.database import get_db
+from app.middleware.admin_role import require_admin_role
+from app.models.index_audit import IndexAudit
+from app.models.ingest_job import IngestJob
+from app.scripts.audit_indexes import run_audit
+
+router = APIRouter(prefix="/api/admin", tags=["admin", "audit"])
+
+
+class AuditRequest(BaseModel):
+    mode: Literal["dry_run", "execute"]
+
+
+class AuditResponse(BaseModel):
+    audit_id: str
+    row_count: int
+    audit_date: date
+
+
+class DispositionUpdate(BaseModel):
+    audit_row_id: uuid.UUID
+    approved_disposition: Literal[
+        "KEEP", "MERGE", "RE-INGEST", "ARCHIVE", "SPLIT"
+    ]
+    approved_target_index: str | None = None
+
+
+class DispositionResult(BaseModel):
+    created_jobs: list[str]
+    updated_rows: int
+
+
+@router.post("/audit", response_model=AuditResponse)
+async def kick_off_audit(
+    body: AuditRequest,
+    _admin: dict = Depends(require_admin_role),
+) -> AuditResponse:
+    """Run the index audit. ``mode='dry_run'`` returns rows without persisting."""
+    rows = await run_audit(dry_run=(body.mode == "dry_run"))
+    return AuditResponse(
+        audit_id=date.today().isoformat(),
+        row_count=len(rows),
+        audit_date=date.today(),
+    )
+
+
+@router.get("/audit/latest")
+def get_latest_audit(
+    db: Session = Depends(get_db),
+    _admin: dict = Depends(require_admin_role),
+) -> list[dict]:
+    """Return all rows from the most-recent audit (by audit_date)."""
+    latest_date = (
+        db.query(IndexAudit.audit_date)
+        .order_by(IndexAudit.audit_date.desc())
+        .limit(1)
+        .scalar()
+    )
+    if not latest_date:
+        return []
+    rows = (
+        db.query(IndexAudit).filter(IndexAudit.audit_date == latest_date).all()
+    )
+    return [
+        {
+            "id": str(r.id),
+            "index_name": r.index_name,
+            "project_id": r.project_id,
+            "record_count": r.record_count,
+            "embedding_model": r.embedding_model,
+            "dominant_domain": r.dominant_domain,
+            "topic_tags": r.topic_tags,
+            "sample_chunks": r.sample_chunks,
+            "proposed_disposition": r.proposed_disposition,
+            "proposed_target_index": r.proposed_target_index,
+            "approved_disposition": r.approved_disposition,
+        }
+        for r in rows
+    ]
+
+
+@router.post(
+    "/audit/{audit_date}/dispositions", response_model=DispositionResult
+)
+def approve_dispositions(
+    audit_date: str,
+    updates: list[DispositionUpdate],
+    db: Session = Depends(get_db),
+    _admin: dict = Depends(require_admin_role),
+) -> DispositionResult:
+    """Bulk approve dispositions and auto-create ingest_jobs for RE-INGEST/MERGE.
+
+    Per-row override of target index is supported via ``approved_target_index``;
+    when omitted, the audit row's ``proposed_target_index`` is used.
+    """
+    created_jobs: list[str] = []
+    for upd in updates:
+        row = (
+            db.query(IndexAudit).filter(IndexAudit.id == upd.audit_row_id).first()
+        )
+        if not row:
+            continue
+        row.approved_disposition = upd.approved_disposition
+        row.approved_at = datetime.utcnow()
+        target_index = (
+            upd.approved_target_index or row.proposed_target_index
+        )
+        if upd.approved_target_index:
+            row.proposed_target_index = upd.approved_target_index
+
+        if upd.approved_disposition in ("RE-INGEST", "MERGE"):
+            if not target_index:
+                raise HTTPException(
+                    400,
+                    f"target_index required for {upd.approved_disposition} "
+                    f"(audit_row_id={upd.audit_row_id})",
+                )
+            job = IngestJob(
+                source_index=row.index_name,
+                target_index=target_index,
+                target_namespace=row.dominant_domain or "default",
+                status="pending",
+                config={"source_project_id": row.project_id},
+            )
+            db.add(job)
+            db.flush()
+            created_jobs.append(str(job.id))
+
+    db.commit()
+    return DispositionResult(
+        created_jobs=created_jobs,
+        updated_rows=len(updates),
+    )

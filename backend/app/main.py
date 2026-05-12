@@ -5,7 +5,7 @@ from app.config import settings
 import app.models.chat  # noqa: F401
 import app.models.index_registry  # noqa: F401
 from app.models.schemas import HealthResponse
-from app.routers import admin, chat as chat_router
+from app.routers import admin, admin_audit, chat as chat_router
 
 app = FastAPI(title=settings.app_name)
 
@@ -19,6 +19,7 @@ app.add_middleware(
 
 app.include_router(chat_router.router)
 app.include_router(admin.router)
+app.include_router(admin_audit.router)
 
 
 @app.get("/healthz", response_model=HealthResponse)
