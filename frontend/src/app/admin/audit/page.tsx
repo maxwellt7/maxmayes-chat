@@ -1,6 +1,6 @@
 "use client";
 
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, UserButton } from "@clerk/nextjs";
 import { useCallback, useEffect, useState } from "react";
 
 import {
@@ -131,7 +131,17 @@ export default function AuditPage() {
         margin: "0 auto",
       }}
     >
-      <h1>Phase 0 — Index Audit</h1>
+      <div
+        style={{
+          display: "flex",
+          justifyContent: "space-between",
+          alignItems: "center",
+          marginBottom: "0.5rem",
+        }}
+      >
+        <h1 style={{ margin: 0 }}>Phase 0 — Index Audit</h1>
+        <UserButton afterSignOutUrl="/sign-in" />
+      </div>
       <p style={{ color: "#666", marginBottom: "1.5rem" }}>
         Run audit → review each row → adjust dispositions → approve all → start ingest jobs.
       </p>
