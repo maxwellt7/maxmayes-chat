@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useAuth } from "@clerk/nextjs";
+import { useAuth, UserButton } from "@clerk/nextjs";
 import { ChatInput } from "@/components/ChatInput";
 import { ChatWindow, type Message } from "@/components/ChatWindow";
 import { getChatHistory, listChatSessions, startChatStream } from "@/lib/api";
@@ -132,9 +132,12 @@ export default function ChatPage() {
       <aside className="chat-sidebar">
         <div className="chat-sidebar-header">
           <span className="chat-sidebar-title">Inquiries</span>
-          <button className="btn btn-sm btn-outline" onClick={startNewChat}>
-            + New
-          </button>
+          <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+            <button className="btn btn-sm btn-outline" onClick={startNewChat}>
+              + New
+            </button>
+            <UserButton afterSignOutUrl="/sign-in" />
+          </div>
         </div>
         <div className="chat-sidebar-list">
           {sessions.length === 0 && (
