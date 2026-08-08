@@ -1,8 +1,42 @@
-.vercel
+# Dependencies
+node_modules/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
 
 # Build artifacts
-**/.next/
-**/__pycache__/
+.next/
+out/
+dist/
+build/
+*.egg-info/
 
-# Local env (do NOT commit)
-**/.env.local
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Platform
+.vercel
+.railway
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+
+# Logs & local scratch
+*.log
+.coverage
+coverage/
+htmlcov/
+/tmp/
+
+# Build info
+tsconfig.tsbuildinfo
