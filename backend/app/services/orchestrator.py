@@ -8,9 +8,9 @@ from typing import Any, AsyncGenerator
 
 from anthropic import AsyncAnthropic
 from openai import AsyncOpenAI
-from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.db.database import SessionFactory, session_scope
 from app.models.index_registry import IndexRegistry
 from app.services.embedding_service import generate_embedding
 from app.services.pinecone_service import get_factory, retrieve
@@ -236,79 +236,131 @@ async def _rerank_chunks(
         return chunks[:top_n]
 
 
+IndexKey = tuple[str, str]
+
+
+def _index_key(index_name: Any, project_id: Any) -> IndexKey:
+    """Registry identity as a hashable pair.
+
+    `project_id` is a `String(50)` column but arrives from the router as whatever
+    JSON the model produced, so both halves are coerced. The old code compared
+    these in SQL, which coerced for us.
+    """
+    return (str(index_name), str(project_id))
+
+
+def _load_active_catalog(session_factory: SessionFactory) -> list[dict[str, Any]]:
+    """Snapshot the active registry into plain dicts.
+
+    Plain dicts rather than ORM instances on purpose: the rows outlive the
+    session they were loaded in, and a detached instance would raise on the first
+    lazy attribute access. Everything retrieval needs is read here, while the
+    session is open, and the connection goes back to the pool immediately after.
+    """
+    with session_scope(session_factory) as db:
+        rows = (
+            db.query(IndexRegistry)
+            .filter(IndexRegistry.is_active == True)  # noqa: E712
+            .all()
+        )
+        return [
+            {
+                "index_name": row.index_name,
+                "project_id": row.project_id,
+                "domain_description": row.domain_description,
+                "sample_queries": row.sample_queries,
+                "dimension": row.dimension,
+                "namespaces": row.namespaces,
+            }
+            for row in rows
+        ]
+
+
+def _deactivate_indexes(
+    session_factory: SessionFactory, keys: list[IndexKey]
+) -> None:
+    """Flip `is_active` off for indexes that failed to retrieve.
+
+    Same footgun as before — any exception deactivates, including a rate limit or
+    a stale key — but batched into one short session after retrieval rather than
+    committing from inside the fan-out. Left as-is deliberately; narrowing which
+    exceptions deactivate is defect I2 and is not this change.
+    """
+    if not keys:
+        return
+    with session_scope(session_factory) as db:
+        for index_name, project_id in keys:
+            entry = (
+                db.query(IndexRegistry)
+                .filter(
+                    IndexRegistry.index_name == index_name,
+                    IndexRegistry.project_id == project_id,
+                )
+                .first()
+            )
+            if entry is not None:
+                entry.is_active = False
+        db.commit()
+
+
 async def _retrieve_one(
     factory: Any,
-    db: Session,
-    candidate: dict[str, Any],
+    entry: dict[str, Any],
     optimized: str,
     top_k: int,
-) -> tuple[IndexRegistry | None, list[dict[str, Any]]]:
-    """Retrieve top_k chunks from a single candidate index, handling the same
-    auto-deactivate-on-failure path the original pipeline used."""
-    registry_entry = (
-        db.query(IndexRegistry)
-        .filter(
-            IndexRegistry.index_name == candidate["index_name"],
-            IndexRegistry.project_id == candidate["project_id"],
-        )
-        .first()
-    )
-    if not registry_entry:
-        return None, []
+) -> tuple[IndexKey | None, list[dict[str, Any]]]:
+    """Retrieve top_k chunks from a single registry entry.
 
+    Returns the entry's key when retrieval failed, so the caller can deactivate
+    it in one batch. Holds no database session: the whole fan-out runs with the
+    connection already back in the pool.
+    """
     try:
         vector = await asyncio.to_thread(
-            generate_embedding, optimized, registry_entry.dimension
+            generate_embedding, optimized, entry["dimension"]
         )
-        ns_dict = registry_entry.namespaces or {}
+        ns_dict = entry.get("namespaces") or {}
         namespaces = list(ns_dict.keys()) if ns_dict else None
         chunks = await asyncio.to_thread(
             retrieve,
             factory,
-            registry_entry.index_name,
-            registry_entry.project_id,
+            entry["index_name"],
+            entry["project_id"],
             vector,
             top_k,
             namespaces,
         )
         # Tag each chunk with its source so downstream stages can keep attribution.
         for c in chunks:
-            c["source_index"] = registry_entry.index_name
-            c["source_project"] = registry_entry.project_id
-        return registry_entry, chunks
+            c["source_index"] = entry["index_name"]
+            c["source_project"] = entry["project_id"]
+        return None, chunks
     except Exception as exc:
         _log.warning(
             "retrieve failed for %s/%s: %s",
-            registry_entry.project_id,
-            registry_entry.index_name,
+            entry["project_id"],
+            entry["index_name"],
             exc,
         )
-        registry_entry.is_active = False
-        db.commit()
-        return registry_entry, []
+        return _index_key(entry["index_name"], entry["project_id"]), []
 
 
 async def run_pipeline(
-    raw_query: str, db: Session
+    raw_query: str, session_factory: SessionFactory
 ) -> AsyncGenerator[str, None]:
+    """Run the retrieval pipeline and stream the synthesized answer.
+
+    Takes a session factory rather than a session. The caller streams this for as
+    long as the model takes to answer — up to the ~120s timeout budget — and a
+    session passed in here would keep a pooled connection checked out for all of
+    it. Instead every database touch below opens its own short-lived session, so
+    the pool sees three brief checkouts rather than one long one.
+    """
     # Step A: optimize
     optimized = await optimize_query(raw_query)
 
     # Step B: route — load active catalog from registry
-    active_indexes = (
-        db.query(IndexRegistry)
-        .filter(IndexRegistry.is_active == True)  # noqa: E712
-        .all()
-    )
-    catalog = [
-        {
-            "index_name": idx.index_name,
-            "project_id": idx.project_id,
-            "domain_description": idx.domain_description,
-            "sample_queries": idx.sample_queries,
-        }
-        for idx in active_indexes
-    ]
+    catalog = _load_active_catalog(session_factory)
 
     if not catalog:
         # An operational problem, not something the caller did or can act on.
@@ -343,17 +395,39 @@ async def run_pipeline(
         )
         return
 
-    # Step C: retrieve from top-N candidates in parallel
+    # Step C: retrieve from top-N candidates in parallel.
+    # The registry rows were snapshotted above, so a candidate the router
+    # hallucinated — or one deactivated since — simply has no entry and is
+    # skipped, exactly as the per-candidate lookup used to do.
+    by_key = {
+        _index_key(entry["index_name"], entry["project_id"]): entry
+        for entry in catalog
+    }
+    entries = [
+        entry
+        for entry in (
+            by_key.get(_index_key(c["index_name"], c["project_id"]))
+            for c in candidates
+        )
+        if entry is not None
+    ]
+
     factory = get_factory()
     per_index_k = list(_PER_INDEX_TOP_K)
-    while len(per_index_k) < len(candidates):
+    while len(per_index_k) < len(entries):
         per_index_k.append(per_index_k[-1])
 
     retrieval_tasks = [
-        _retrieve_one(factory, db, candidate, optimized, per_index_k[i])
-        for i, candidate in enumerate(candidates)
+        _retrieve_one(factory, entry, optimized, per_index_k[i])
+        for i, entry in enumerate(entries)
     ]
     retrieval_results = await asyncio.gather(*retrieval_tasks)
+
+    # One short session for the deactivations, after the fan-out rather than
+    # during it.
+    _deactivate_indexes(
+        session_factory, [key for key, _ in retrieval_results if key is not None]
+    )
 
     ranked_lists = [chunks for _, chunks in retrieval_results if chunks]
     if not ranked_lists:

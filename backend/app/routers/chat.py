@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.core.errors import log_and_convert
-from app.db.database import get_db
+from app.db.database import get_db, get_session_factory, session_scope
 from app.models.chat import ChatMessage
 from app.models.schemas import ChatRequest
 from app.security.dependencies import get_current_principal
@@ -50,6 +50,8 @@ async def chat_endpoint(
     request_id = str(uuid.uuid4())
     user_id = principal.user_id
 
+    # --- everything below runs on the request-scoped session, before streaming ---
+
     # Order matters. Rate limits are checked before anything is written or
     # reserved, so a flood costs one indexed row lock rather than a pipeline run.
     rate_limit.enforce(
@@ -78,6 +80,22 @@ async def chat_endpoint(
     ))
     db.commit()
 
+    # Hand the pooled connection back before a single token is generated.
+    #
+    # FastAPI holds a `yield` dependency open until the response is finished, and
+    # for a StreamingResponse that is the whole stream — up to the ~120s timeout
+    # budget. With a pool of 10 plus 20 overflow, thirty concurrent chats would
+    # take every connection and the thirty-first request, including unrelated
+    # ones, would block for `pool_timeout` and fail. `get_current_principal`
+    # shares this same session via FastAPI's dependency cache, so closing it here
+    # releases the auth path's connection too.
+    #
+    # `db` must not be used again after this point. `Session.close()` is
+    # idempotent and the session would silently check out a *new* connection on
+    # next use, which would quietly reintroduce the bug. Post-stream work uses
+    # `session_scope()` instead.
+    db.close()
+
     accumulated: list[str] = []
 
     def _produced_an_answer() -> bool:
@@ -86,32 +104,60 @@ async def chat_endpoint(
         # nothing worth charging for.
         return bool("".join(accumulated).strip())
 
-    def _persist_reply() -> None:
-        db.add(ChatMessage(
+    def _persist_reply(session: Session) -> None:
+        session.add(ChatMessage(
             session_id=payload.session_id,
             user_id=user_id,
             role="assistant",
             content="".join(accumulated),
         ))
-        db.commit()
+        session.commit()
+
+    def _settle_unfinished() -> None:
+        """Persist and reconcile a turn that ended without reaching either the
+        success or the error path.
+
+        In practice that means the client hung up: Starlette throws
+        `GeneratorExit`/`CancelledError` into the generator at the `yield`, and
+        neither derives from `Exception`, so the handler below never sees it.
+        Previously that lost the turn *and* leaked the reservation, so a client
+        that disconnected repeatedly would ratchet the day's ceiling closed
+        against everyone. Same rule as the error path: tokens the user saw are
+        kept and paid for, a turn that produced nothing is refunded.
+        """
+        try:
+            with session_scope() as session:
+                if _produced_an_answer():
+                    _persist_reply(session)
+                else:
+                    spend_guard.release(session, estimated_usd)
+        except Exception:
+            _log.error(
+                "chat_stream_settle_failed request_id=%s", request_id, exc_info=True
+            )
 
     async def event_stream():
+        settled = False
         try:
-            async for token_text in run_pipeline(payload.message, db):
+            async for token_text in run_pipeline(
+                payload.message, get_session_factory()
+            ):
                 accumulated.append(token_text)
                 data = json.dumps({"token": token_text, "request_id": request_id})
                 yield f"data: {data}\n\n"
 
-            _persist_reply()
+            with session_scope() as session:
+                _persist_reply(session)
+            settled = True
             yield "data: [DONE]\n\n"
         except Exception as exc:
+            settled = True
             # The client learns a code and a request ID. Everything that could
             # identify an index, a namespace, a provider or a query stays in the
             # log, keyed by that ID.
             client = log_and_convert(
                 exc, request_id=request_id, context="chat_stream"
             )
-            db.rollback()
 
             if _produced_an_answer():
                 # Tokens already reached the user, so they were really paid for —
@@ -119,20 +165,24 @@ async def chat_endpoint(
                 # direction. Keep what was generated rather than dropping the
                 # partial answer on the floor.
                 try:
-                    _persist_reply()
+                    with session_scope() as session:
+                        _persist_reply(session)
                 except Exception:
                     _log.error(
                         "partial_reply_persist_failed request_id=%s",
                         request_id,
                         exc_info=True,
                     )
-                    db.rollback()
             else:
                 # Nothing was produced, so the reservation is returned. Otherwise
                 # a failing provider would burn the day's budget on empty answers.
-                spend_guard.release(db, estimated_usd)
+                with session_scope() as session:
+                    spend_guard.release(session, estimated_usd)
 
             yield f"data: {json.dumps(client.payload(request_id))}\n\n"
+        finally:
+            if not settled:
+                _settle_unfinished()
 
     return StreamingResponse(
         event_stream(),

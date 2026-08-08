@@ -155,43 +155,65 @@ async def test_verify_accuracy_insufficient(monkeypatch):
         assert result["recommendation"] == "insufficient_context"
 
 
-async def test_run_pipeline_out_of_domain_skips_retrieval(monkeypatch):
+def _register_index(db, index_name: str, project_id: str = "1", dimension: int = 1024):
+    """A real `index_registry` row in the throwaway test database.
+
+    Fixture rows only — the production registry is deliberately empty and must
+    stay that way; see the privacy gate in docs/KICKOFF-PROMPT.md §4a.
+    """
+    from app.models.index_registry import IndexRegistry
+
+    entry = IndexRegistry(
+        index_name=index_name,
+        project_id=project_id,
+        api_key_env_var="FIXTURE_KEY",
+        dimension=dimension,
+        embedding_model="fixture-embed",
+        metric="cosine",
+        domain_description="fixture domain",
+        sample_queries=[],
+        namespaces={},
+        is_active=True,
+    )
+    db.add(entry)
+    db.commit()
+    return entry
+
+
+def _router_replies(*payloads: str):
+    return AsyncMock(side_effect=[
+        MagicMock(choices=[MagicMock(message=MagicMock(content=payload))])
+        for payload in payloads
+    ])
+
+
+async def test_run_pipeline_out_of_domain_skips_retrieval(monkeypatch, db_session):
     """When the router flags out_of_domain, the pipeline should refuse without
     embedding or retrieving — that's the whole point of the gate."""
     _patch_settings(monkeypatch, openai_api_key="test-openai")
+    from app.db.database import SessionLocal
     from app.services.orchestrator import run_pipeline
 
-    fake_entry = MagicMock()
-    fake_entry.index_name = "local-business"
-    fake_entry.project_id = "1"
-    fake_entry.is_active = True
-    fake_entry.domain_description = "local business marketing"
-    fake_entry.sample_queries = []
-
-    fake_db = MagicMock()
-    mock_query = MagicMock()
-    mock_query.filter.return_value.all.return_value = [fake_entry]
-    fake_db.query.return_value = mock_query
+    _register_index(db_session, "local-business")
 
     with patch("app.services.orchestrator.AsyncOpenAI") as MockOpenAI, \
          patch("app.services.orchestrator.generate_embedding") as mock_embed, \
-         patch("app.services.orchestrator.retrieve") as mock_retrieve, \
-         patch("app.services.orchestrator.IndexRegistry"):
+         patch("app.services.orchestrator.retrieve") as mock_retrieve:
 
         mock_client = MagicMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            MagicMock(choices=[MagicMock(message=MagicMock(content="optimized"))]),
-            MagicMock(choices=[MagicMock(message=MagicMock(content=json.dumps({
+        mock_client.chat.completions.create = _router_replies(
+            "optimized",
+            json.dumps({
                 "candidates": [
                     {"index_name": "local-business", "project_id": "1", "confidence": 0.25}
                 ],
                 "out_of_domain": True,
-            })))]),
-        ])
+            }),
+        )
         MockOpenAI.return_value = mock_client
 
         chunks = []
-        async for chunk in run_pipeline("D2C marketing strategy", fake_db):
+        async for chunk in run_pipeline("D2C marketing strategy", SessionLocal):
             chunks.append(chunk)
 
         full_response = "".join(chunks)
@@ -200,59 +222,54 @@ async def test_run_pipeline_out_of_domain_skips_retrieval(monkeypatch):
         mock_retrieve.assert_not_called()
 
 
-async def test_run_pipeline_deactivates_broken_index(monkeypatch):
-    """If retrieve raises (e.g., 404), the index should be deactivated."""
+async def test_run_pipeline_deactivates_broken_index(monkeypatch, db_session):
+    """If retrieve raises (e.g., 404), the index should be deactivated.
+
+    Asserted against a real row rather than a mock, so this also covers the
+    deactivation happening in its own short-lived session now that the pipeline
+    no longer borrows the request's.
+    """
     _patch_settings(monkeypatch, openai_api_key="test-openai")
+    from app.db.database import SessionLocal
+    from app.models.index_registry import IndexRegistry
     from app.services.orchestrator import run_pipeline
 
-    fake_entry = MagicMock()
-    fake_entry.index_name = "broken-index"
-    fake_entry.project_id = "1"
-    fake_entry.dimension = 1024
-    fake_entry.is_active = True
-    fake_entry.domain_description = "test"
-    fake_entry.sample_queries = []
-    fake_entry.namespaces = None
-
-    fake_db = MagicMock()
-    mock_query = MagicMock()
-    mock_query.filter.return_value.all.return_value = [fake_entry]
-    mock_query.filter.return_value.first.return_value = fake_entry
-    fake_db.query.return_value = mock_query
+    _register_index(db_session, "broken-index")
 
     with patch("app.services.orchestrator.AsyncOpenAI") as MockOpenAI, \
          patch("app.services.orchestrator.generate_embedding") as mock_embed, \
-         patch("app.services.orchestrator.retrieve") as mock_retrieve, \
-         patch("app.services.orchestrator.IndexRegistry") as MockRegistry:
-
-        MockRegistry.is_active = MagicMock()
-        MockRegistry.index_name = MagicMock()
-        MockRegistry.project_id = MagicMock()
+         patch("app.services.orchestrator.retrieve") as mock_retrieve:
 
         mock_client = MagicMock()
-        mock_client.chat.completions.create = AsyncMock(side_effect=[
-            MagicMock(choices=[MagicMock(message=MagicMock(content="optimized"))]),
-            MagicMock(choices=[MagicMock(message=MagicMock(content=json.dumps({
+        mock_client.chat.completions.create = _router_replies(
+            "optimized",
+            json.dumps({
                 "candidates": [
                     {"index_name": "broken-index", "project_id": "1", "confidence": 0.95}
                 ],
                 "out_of_domain": False,
-            })))]),
-        ])
+            }),
+        )
         MockOpenAI.return_value = mock_client
 
         mock_embed.return_value = [0.1] * 1024
         mock_retrieve.side_effect = Exception("Pinecone 404 NOT_FOUND")
 
         chunks = []
-        async for chunk in run_pipeline("test query", fake_db):
+        async for chunk in run_pipeline("test query", SessionLocal):
             chunks.append(chunk)
 
-        full_response = "".join(chunks)
-        assert "couldn't find anything relevant" in full_response
-        # The refusal must not name the index, the project, or Pinecone.
-        assert "broken-index" not in full_response
-        assert "Pinecone" not in full_response
-        assert "index" not in full_response.lower()
-        assert fake_entry.is_active is False
-        fake_db.commit.assert_called()
+    full_response = "".join(chunks)
+    assert "couldn't find anything relevant" in full_response
+    # The refusal must not name the index, the project, or Pinecone.
+    assert "broken-index" not in full_response
+    assert "Pinecone" not in full_response
+    assert "index" not in full_response.lower()
+
+    db_session.expire_all()
+    stored = (
+        db_session.query(IndexRegistry)
+        .filter(IndexRegistry.index_name == "broken-index")
+        .one()
+    )
+    assert stored.is_active is False
