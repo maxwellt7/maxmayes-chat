@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Any
 
 _log = logging.getLogger(__name__)
 
@@ -27,8 +28,8 @@ class ClientError:
     message: str
     status_code: int
 
-    def payload(self, request_id: str | None = None) -> dict:
-        body: dict = {"error": {"code": self.code, "message": self.message}}
+    def payload(self, request_id: str | None = None) -> dict[str, Any]:
+        body: dict[str, Any] = {"error": {"code": self.code, "message": self.message}}
         if request_id:
             body["request_id"] = request_id
         return body

@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import date, datetime
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from pydantic import BaseModel
@@ -72,7 +72,7 @@ async def kick_off_audit(
 def get_latest_audit(
     db: Session = Depends(get_db),
     _owner: Principal = Depends(require_owner),
-) -> list[dict]:
+) -> list[dict[str, Any]]:
     """Return all rows from the most-recent audit (by audit_date)."""
     latest_date = (
         db.query(IndexAudit.audit_date)
@@ -162,7 +162,7 @@ async def trigger_ingest(
     job_id: uuid.UUID,
     background: BackgroundTasks,
     _owner: Principal = Depends(require_owner),
-) -> dict:
+) -> dict[str, Any]:
     """Kick off (or resume) an ingest job in the background.
 
     Returns 202 immediately; long-running work proceeds asynchronously. The

@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import DateTime, Index, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -27,7 +28,9 @@ class IngestJob(Base):
     processed_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     failed_chunks: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
-    config: Mapped[dict] = mapped_column(json_type(), nullable=False, default=dict)
+    config: Mapped[dict[str, Any]] = mapped_column(
+        json_type(), nullable=False, default=dict
+    )
     started_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )

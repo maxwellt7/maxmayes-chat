@@ -1,0 +1,8 @@
+# Development and CI dependencies. Not installed into the deployed image —
+# `Dockerfile` installs `requirements.txt` only.
+-r requirements.txt
+
+# Pinned, not floored. A minor mypy release routinely adds checks, and a
+# typechecker that can start failing CI on an unrelated commit is a typechecker
+# people turn off. Bump it deliberately.
+mypy==2.3.0

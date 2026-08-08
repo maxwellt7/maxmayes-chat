@@ -23,6 +23,7 @@ edit.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -57,7 +58,7 @@ _EMAIL_CLAIM_CANDIDATES = (
 )
 
 
-def email_from_claims(claims: dict) -> str | None:
+def email_from_claims(claims: dict[str, Any]) -> str | None:
     """Best-effort email extraction from a *verified* token's claims.
 
     Only reached after signature verification, so the value is as trustworthy as

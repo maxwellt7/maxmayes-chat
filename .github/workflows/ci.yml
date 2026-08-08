@@ -1,0 +1,229 @@
+name: CI
+
+# No secrets, anywhere in this file, on purpose.
+#
+# The auth tests generate an RSA keypair in-process and serve their own JWKS
+# over loopback, so they need no Clerk access and are more rigorous than testing
+# against a live instance would be. Nothing here reaches Pinecone, Clerk,
+# OpenAI, Cohere or Anthropic: every module that would is either mocked or
+# unreachable without an API key it is never given. If a test ever needs a real
+# credential, exclude it from CI and say so here rather than adding a secret —
+# this repository is public, and the corpus behind those keys is not.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches `backend/Dockerfile` (python:3.12-slim) so CI checks what production
+  # actually runs, and `mypy.ini`'s `python_version`.
+  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # Mark this job as a required status check in branch protection.
+  #
+  # It is split out from the main test job so it cannot be lost in a long log or
+  # skipped by a `-k` filter. The previous test suite built unsigned tokens and
+  # asserted they were *accepted*, with a comment explaining why that was
+  # correct — so the green suite certified a live auth bypass as intended
+  # behaviour, and any agent told to keep tests green preserved it faithfully.
+  # These are the tests that assert the opposite. They run first, alone, and
+  # loudly.
+  # ---------------------------------------------------------------------------
+  auth-negative:
+    name: Negative auth suite (required)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Forged, unsigned, expired and role-claiming tokens must all be refused
+        # SQLite is sufficient here: these assert HTTP status codes and role
+        # resolution, not locking behaviour.
+        run: |
+          python -m pytest -v \
+            tests/test_auth_negative.py \
+            tests/test_authorization_rules.py \
+            tests/test_clerk_jwt_verification.py \
+            tests/test_owner_bootstrap.py \
+            tests/test_test_isolation.py
+
+  backend-tests:
+    name: Backend tests (PostgreSQL)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        # The suite needs real Postgres: `SELECT ... FOR UPDATE` is a no-op on
+        # SQLite, so the spend-ceiling, rate-limit and connection-pool
+        # concurrency tests skip there and would give false confidence.
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maxmayes_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Run the full suite against real PostgreSQL
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/maxmayes_test
+        run: python -m pytest -q
+
+      - name: Fail if the Postgres-only tests silently skipped
+        # These skip themselves when the backend is not Postgres, because
+        # `SELECT ... FOR UPDATE` and connection pooling do not exist in any
+        # meaningful form on SQLite. A service container that failed to come up
+        # would otherwise turn this job green while testing none of what it
+        # exists to test — which is the exact shape of the bug that let the auth
+        # bypass live for months.
+        env:
+          TEST_DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/maxmayes_test
+        run: |
+          set -o pipefail
+          python -m pytest -q -rs \
+            tests/test_concurrency_guards.py \
+            tests/test_stream_connection_lifecycle.py | tee /tmp/pg-only.out
+          if grep -q "skipped" /tmp/pg-only.out; then
+            echo "::error::the Postgres-only tests skipped — TEST_DATABASE_URL is not pointing at Postgres"
+            exit 1
+          fi
+
+  migrations:
+    name: Alembic migrations apply with no drift
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: maxmayes_migrations
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: Apply every migration to an empty database
+        # Railway's Dockerfile runs `alembic upgrade head` on boot, so a
+        # migration that only works against an already-migrated database
+        # crash-loops the container. This is the check that would have caught
+        # that. Upgrade only — no `downgrade` runs in automation.
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/maxmayes_migrations
+        run: alembic upgrade head
+
+      - name: Fail if the models have drifted from the migrations
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/maxmayes_migrations
+        run: alembic check
+
+  mypy:
+    name: Typecheck (mypy)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements-dev.txt
+
+      - name: Install backend dependencies
+        run: pip install -r requirements-dev.txt
+
+      - name: mypy
+        # See mypy.ini for the tiering. app/security, app/core, app/db,
+        # app/models and app/routers are strict and must stay at zero; a closed
+        # list of legacy service modules is exempt with a recorded reason.
+        run: mypy --config-file mypy.ini
+
+  frontend:
+    name: Frontend typecheck and lint
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: tsc --noEmit
+        run: npm run typecheck
+
+      - name: Lint
+        # There is no ESLint configuration in this repository and no `eslint`
+        # dependency, so `next lint` would try to scaffold one interactively and
+        # hang. Rather than pretend to lint, this reports the gap and passes.
+        # Delete the guard once an `.eslintrc` exists.
+        run: |
+          if ls .eslintrc* eslint.config.* >/dev/null 2>&1; then
+            npm run lint
+          else
+            echo "::warning::no ESLint config found; skipping lint. Add .eslintrc and remove this guard."
+          fi

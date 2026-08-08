@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 from pydantic import BaseModel, Field
 
@@ -35,7 +36,7 @@ class IndexRegistryCreate(BaseModel):
     metric: str
     domain_description: str
     sample_queries: list[str]
-    namespaces: dict = {}
+    namespaces: dict[str, Any] = {}
     is_active: bool = True
 
 
@@ -48,7 +49,7 @@ class IndexRegistryUpdate(BaseModel):
     metric: str | None = None
     domain_description: str | None = None
     sample_queries: list[str] | None = None
-    namespaces: dict | None = None
+    namespaces: dict[str, Any] | None = None
     is_active: bool | None = None
 
 
@@ -62,7 +63,7 @@ class IndexRegistryResponse(BaseModel):
     metric: str
     domain_description: str
     sample_queries: list[str]
-    namespaces: dict
+    namespaces: dict[str, Any]
     is_active: bool
 
     model_config = {"from_attributes": True}

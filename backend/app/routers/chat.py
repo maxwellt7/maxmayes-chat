@@ -1,6 +1,8 @@
 import json
 import logging
 import uuid
+from collections.abc import AsyncIterator
+from typing import Any
 
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
@@ -136,7 +138,7 @@ async def chat_endpoint(
                 "chat_stream_settle_failed request_id=%s", request_id, exc_info=True
             )
 
-    async def event_stream():
+    async def event_stream() -> AsyncIterator[str]:
         settled = False
         try:
             async for token_text in run_pipeline(
@@ -195,7 +197,7 @@ async def chat_endpoint(
 async def list_sessions(
     principal: Principal = Depends(get_current_principal),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     user_id = principal.user_id
     rows = (
         db.query(
@@ -242,7 +244,7 @@ async def get_history(
     session_id: str,
     principal: Principal = Depends(get_current_principal),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     # `session_id` comes from the caller, so the `user_id` predicate is the only
     # thing standing between one user and another's transcript. It is not
     # optional and must not be relaxed into a post-filter.

@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import uuid
+from typing import Any
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
@@ -66,7 +67,7 @@ async def list_indexes(
     skip: int = 0,
     limit: int = 100,
     include_inactive: bool = False,
-) -> dict:
+) -> dict[str, Any]:
     base_query = db.query(IndexRegistry)
     if not include_inactive:
         base_query = base_query.filter(IndexRegistry.is_active == True)  # noqa: E712
@@ -190,14 +191,14 @@ async def auto_describe_all(
     _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
     only_empty: bool = True,
-) -> dict:
+) -> dict[str, Any]:
     query = db.query(IndexRegistry)
     if only_empty:
         query = query.filter(IndexRegistry.domain_description == "")
     entries = query.all()
 
     succeeded: list[str] = []
-    failed: list[dict] = []
+    failed: list[dict[str, Any]] = []
     for entry in entries:
         try:
             ns_dict = entry.namespaces or {}
@@ -233,12 +234,12 @@ async def auto_describe_all(
 async def health_check_all_indexes(
     _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     """Ping each active index in Pinecone. Deactivate any that 404."""
     active = db.query(IndexRegistry).filter(IndexRegistry.is_active == True).all()  # noqa: E712
     factory = get_factory()
     healthy: list[str] = []
-    deactivated: list[dict] = []
+    deactivated: list[dict[str, Any]] = []
 
     for entry in active:
         try:
@@ -268,7 +269,7 @@ async def health_check_all_indexes(
 async def discover_indexes(
     _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
-) -> dict:
+) -> dict[str, Any]:
     discovered: list[DiscoveredIndex] = []
     partial_failures: list[str] = []
 

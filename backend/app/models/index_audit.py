@@ -1,5 +1,6 @@
 import uuid
 from datetime import date, datetime
+from typing import Any
 
 from sqlalchemy import Date, DateTime, Integer, String, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -25,8 +26,12 @@ class IndexAudit(Base):
     record_count: Mapped[int] = mapped_column(Integer, nullable=False)
     embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     dominant_domain: Mapped[str | None] = mapped_column(String(100), nullable=True)
-    topic_tags: Mapped[list] = mapped_column(json_type(), nullable=False, default=list)
-    sample_chunks: Mapped[list] = mapped_column(json_type(), nullable=False)
+    topic_tags: Mapped[list[str]] = mapped_column(
+        json_type(), nullable=False, default=list
+    )
+    sample_chunks: Mapped[list[dict[str, Any]]] = mapped_column(
+        json_type(), nullable=False
+    )
     proposed_disposition: Mapped[str] = mapped_column(String(50), nullable=False)
     proposed_target_index: Mapped[str | None] = mapped_column(String(255), nullable=True)
     approved_disposition: Mapped[str | None] = mapped_column(String(50), nullable=True)

@@ -1,5 +1,6 @@
 import uuid
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import Boolean, DateTime, Integer, String, Text, func
 from sqlalchemy.orm import Mapped, mapped_column
@@ -24,7 +25,9 @@ class IndexRegistry(Base):
     sample_queries: Mapped[list[str]] = mapped_column(
         text_array_type(), nullable=False
     )
-    namespaces: Mapped[dict] = mapped_column(json_type(), nullable=False, default=dict)
+    namespaces: Mapped[dict[str, Any]] = mapped_column(
+        json_type(), nullable=False, default=dict
+    )
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()

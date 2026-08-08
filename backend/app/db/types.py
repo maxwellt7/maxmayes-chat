@@ -12,21 +12,23 @@ caches) and sharing one across every table invites action-at-a-distance bugs.
 """
 from __future__ import annotations
 
+from typing import Any
+
 import sqlalchemy as sa
 from sqlalchemy.dialects import postgresql
 
 
-def uuid_type() -> sa.types.TypeEngine:
+def uuid_type() -> sa.types.TypeEngine[Any]:
     """`uuid` on Postgres, `CHAR(32)` on SQLite, `uuid.UUID` in Python either way."""
     return sa.Uuid(as_uuid=True)
 
 
-def json_type() -> sa.types.TypeEngine:
+def json_type() -> sa.types.TypeEngine[Any]:
     """`jsonb` on Postgres, `JSON` (text-backed) on SQLite."""
     return sa.JSON().with_variant(postgresql.JSONB(astext_type=sa.Text()), "postgresql")
 
 
-def text_array_type() -> sa.types.TypeEngine:
+def text_array_type() -> sa.types.TypeEngine[Any]:
     """`text[]` on Postgres, a JSON array on SQLite.
 
     SQLite has no array type. Storing a JSON array keeps the Python-side value a
@@ -35,7 +37,7 @@ def text_array_type() -> sa.types.TypeEngine:
     return sa.JSON().with_variant(postgresql.ARRAY(sa.Text()), "postgresql")
 
 
-def money_type() -> sa.types.TypeEngine:
+def money_type() -> sa.types.TypeEngine[Any]:
     """`numeric(12, 6)` — exact decimal, because summing floats to enforce a
     spend ceiling accumulates error in the direction of overspending."""
     return sa.Numeric(precision=12, scale=6, asdecimal=True)
