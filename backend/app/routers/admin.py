@@ -5,8 +5,8 @@ import uuid
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from app.core.errors import UPSTREAM_UNAVAILABLE, log_and_convert
 from app.db.database import SessionLocal, get_db
-from app.middleware.clerk_auth import require_bearer_token
 from app.models.index_registry import IndexRegistry
 from app.models.schemas import (
     DiscoveredIndex,
@@ -14,6 +14,8 @@ from app.models.schemas import (
     IndexRegistryResponse,
     IndexRegistryUpdate,
 )
+from app.security.dependencies import require_owner
+from app.security.principal import Principal
 from app.services.auto_describe import generate_index_description
 from app.services.pinecone_service import get_factory
 
@@ -59,7 +61,7 @@ async def _auto_describe_and_save(index_id: uuid.UUID) -> None:
 
 @router.get("/indexes")
 async def list_indexes(
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
     skip: int = 0,
     limit: int = 100,
@@ -80,7 +82,7 @@ async def list_indexes(
 async def create_index(
     payload: IndexRegistryCreate,
     background_tasks: BackgroundTasks,
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
 ) -> IndexRegistryResponse:
     existing = (
@@ -111,7 +113,7 @@ async def create_index(
 @router.get("/indexes/{index_id}")
 async def get_index(
     index_id: str,
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
 ) -> IndexRegistryResponse:
     entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
@@ -124,7 +126,7 @@ async def get_index(
 async def update_index(
     index_id: str,
     payload: IndexRegistryUpdate,
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
 ) -> IndexRegistryResponse:
     entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
@@ -140,7 +142,7 @@ async def update_index(
 @router.delete("/indexes/{index_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_index(
     index_id: str,
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
 ) -> None:
     entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
@@ -153,7 +155,7 @@ async def delete_index(
 @router.post("/indexes/{index_id}/auto-describe")
 async def auto_describe_index(
     index_id: str,
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
 ) -> IndexRegistryResponse:
     entry = db.query(IndexRegistry).filter(IndexRegistry.id == _parse_index_id(index_id)).first()
@@ -167,9 +169,13 @@ async def auto_describe_index(
             entry.index_name, entry.project_id, entry.dimension, namespaces
         )
     except Exception as exc:
+        # Provider exceptions quote the request back, which for this call means
+        # the index name and namespace list. Owner-only or not, it does not need
+        # to travel over the wire.
+        log_and_convert(exc, context="auto_describe")
         raise HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=f"Auto-describe failed: {exc}",
+            status_code=UPSTREAM_UNAVAILABLE.status_code,
+            detail=UPSTREAM_UNAVAILABLE.message,
         )
 
     entry.domain_description = result["domain_description"]
@@ -181,7 +187,7 @@ async def auto_describe_index(
 
 @router.post("/indexes/auto-describe-all")
 async def auto_describe_all(
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
     only_empty: bool = True,
 ) -> dict:
@@ -205,8 +211,15 @@ async def auto_describe_all(
             succeeded.append(entry.index_name)
         except Exception as exc:
             db.rollback()
-            failed.append({"index_name": entry.index_name, "error": str(exc)})
-            logger.warning("auto-describe-all failed for %s: %s", entry.index_name, exc)
+            # The exception type is enough for the owner to know what kind of
+            # failure it was; the message body is not summarised into the
+            # response.
+            failed.append(
+                {"index_name": entry.index_name, "error": type(exc).__name__}
+            )
+            logger.warning(
+                "auto-describe-all failed for %s", entry.index_name, exc_info=True
+            )
 
     return {
         "succeeded": succeeded,
@@ -218,7 +231,7 @@ async def auto_describe_all(
 
 @router.post("/indexes/health-check")
 async def health_check_all_indexes(
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
 ) -> dict:
     """Ping each active index in Pinecone. Deactivate any that 404."""
@@ -236,8 +249,12 @@ async def health_check_all_indexes(
         except Exception as exc:
             entry.is_active = False
             db.commit()
-            deactivated.append({"index_name": entry.index_name, "reason": str(exc)[:200]})
-            logger.warning("health-check deactivated %s: %s", entry.index_name, exc)
+            deactivated.append(
+                {"index_name": entry.index_name, "reason": type(exc).__name__}
+            )
+            logger.warning(
+                "health-check deactivated %s", entry.index_name, exc_info=True
+            )
 
     return {
         "healthy": healthy,
@@ -249,7 +266,7 @@ async def health_check_all_indexes(
 
 @router.post("/discover")
 async def discover_indexes(
-    token: str = Depends(require_bearer_token),
+    _owner: Principal = Depends(require_owner),
     db: Session = Depends(get_db),
 ) -> dict:
     discovered: list[DiscoveredIndex] = []
@@ -298,9 +315,10 @@ async def discover_indexes(
                     )
                 )
         except Exception as exc:
-            failure_msg = f"project {project_id}: {type(exc).__name__}: {exc}"
-            logger.warning("discover failed: %s", failure_msg)
-            partial_failures.append(failure_msg)
+            logger.warning("discover failed for project %s", project_id, exc_info=True)
+            partial_failures.append(
+                f"project {project_id}: {type(exc).__name__}"
+            )
             continue
 
     return {

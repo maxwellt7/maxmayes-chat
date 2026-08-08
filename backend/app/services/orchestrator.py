@@ -242,7 +242,7 @@ async def _retrieve_one(
     candidate: dict[str, Any],
     optimized: str,
     top_k: int,
-) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+) -> tuple[IndexRegistry | None, list[dict[str, Any]]]:
     """Retrieve top_k chunks from a single candidate index, handling the same
     auto-deactivate-on-failure path the original pipeline used."""
     registry_entry = (
@@ -311,14 +311,23 @@ async def run_pipeline(
     ]
 
     if not catalog:
-        yield "I don't have any indexes configured yet. Please add indexes in the admin dashboard."
+        # An operational problem, not something the caller did or can act on.
+        # The instruction to "add indexes in the admin dashboard" was reaching
+        # end users, telling strangers an admin dashboard exists.
+        _log.error("pipeline_no_active_indexes: index_registry has no active rows")
+        yield (
+            "I'm not able to answer questions right now. Please try again shortly."
+        )
         return
 
     route_result = await route_query(optimized, catalog)
     candidates = route_result["candidates"][:_TOP_INDEXES]
 
     if not candidates:
-        yield "I couldn't determine which knowledge base to search. Please rephrase your question."
+        yield (
+            "I couldn't find a good match for that question. Try rephrasing it, "
+            "or asking something more specific."
+        )
         return
 
     # Step B.5: pre-retrieval out-of-domain gate
@@ -348,9 +357,15 @@ async def run_pipeline(
 
     ranked_lists = [chunks for _, chunks in retrieval_results if chunks]
     if not ranked_lists:
+        # Could be a genuine miss or could be every candidate index erroring.
+        # Which one it was is a server-side concern; the caller gets the same
+        # message either way, with no mention of indexes or sources.
+        _log.warning(
+            "pipeline_no_results candidates=%d", len(candidates)
+        )
         yield (
-            "I tried to consult my indexes, but none of the candidate sources "
-            "returned results. Please try rephrasing your question."
+            "I couldn't find anything relevant for that. Try rephrasing your "
+            "question, or asking about something else."
         )
         return
 

@@ -1,5 +1,11 @@
 export type SSEToken = { token: string; request_id: string };
-export type SSEError = { error: string; request_id: string };
+
+/** The server sends a taxonomy code and a fixed, client-safe message — never
+ *  exception text. `request_id` is what correlates it to the server log. */
+export type SSEError = {
+  error: { code: string; message: string };
+  request_id?: string;
+};
 
 export async function* readSSEStream(
   response: Response

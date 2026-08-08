@@ -9,17 +9,17 @@ Phase = the delivery phase that fixes it.
 
 | ID | Sev | Phase | Defect | Location |
 |---|---|---|---|---|
-| S1 | C | 1 | Clerk JWT signature never verified — payload base64-decoded and trusted. Full auth bypass. | `middleware/clerk_auth.py:26-44` |
-| S2 | C | 1 | `publicMetadata.role` read from unverified token → trivial admin privilege escalation. | `middleware/admin_role.py:16-47` |
-| S3 | C | 1 | All `/api/admin/indexes*` + `/discover` routes require only a *syntactically valid* bearer string, no role check. `"Bearer x"` works. | `routers/admin.py:60+` |
-| S4 | H | 1 | Frontend `/admin` gated on sign-in only, not role; landing page shows admin link to every signed-in user. | `frontend/src/middleware.ts:3-11`, `app/page.tsx:23-27` |
-| S5 | H | 1 | Raw exception text streamed to clients over SSE and returned in admin 500s. | `routers/chat.py:55-57`, `routers/admin.py:172` |
-| S6 | H | 1 | No rate limiting or per-user cost quota anywhere → unbounded LLM spend / DoS. | global |
-| S7 | M | 1 | FastAPI `/docs` + `/openapi.json` publicly exposed. | `main.py` |
+| S1 | C | 1 | Clerk JWT signature never verified — payload base64-decoded and trusted. Full auth bypass. **FIXED** — `middleware/clerk_auth.py` deleted; all routes now depend on `security.dependencies.get_current_principal` (RS256/JWKS). | ~~`middleware/clerk_auth.py:26-44`~~ |
+| S2 | C | 1 | `publicMetadata.role` read from unverified token → trivial admin privilege escalation. **FIXED** — `middleware/admin_role.py` deleted; roles read from `user_accounts`, never from claims. | ~~`middleware/admin_role.py:16-47`~~ |
+| S3 | C | 1 | All `/api/admin/indexes*` + `/discover` routes require only a *syntactically valid* bearer string, no role check. `"Bearer x"` works. **FIXED** — every admin route depends on `require_owner`. | `routers/admin.py`, `routers/admin_audit.py` |
+| S4 | H | 1 | Frontend `/admin` gated on sign-in only, not role; landing page shows admin link to every signed-in user. **Backend now enforces owner-only (403)**; the frontend still shows the link. Cosmetic, no longer a data exposure. | `frontend/src/middleware.ts:3-11`, `app/page.tsx:23-27` |
+| S5 | H | 1 | Raw exception text streamed to clients over SSE and returned in admin 500s. **FIXED** — `core/errors.py` taxonomy; full detail logged with a `request_id`, generic code+message returned. | `routers/chat.py`, `routers/admin.py` |
+| S6 | H | 1 | No rate limiting or per-user cost quota anywhere → unbounded LLM spend / DoS. **FIXED** — Postgres-backed global daily spend ceiling (`services/spend_guard.py`) plus per-account and per-IP token buckets (`services/rate_limit.py`). | `services/spend_guard.py`, `services/rate_limit.py` |
+| S7 | M | 1 | FastAPI `/docs` + `/openapi.json` publicly exposed. **FIXED** — `docs_url`/`openapi_url`/`redoc_url` are `None`. | `main.py` |
 | S8 | M | 1 | `/specs` dev page unprotected, renders arbitrary HTML into an iframe. | `frontend/src/app/specs/page.tsx` |
-| S9 | M | 1 | No max length on `ChatRequest.message` → cost amplification. | `models/schemas.py:11-12` |
+| S9 | M | 1 | No max length on `ChatRequest.message` → cost amplification. **FIXED** — `max_length=4000`. | `models/schemas.py` |
 | S10 | M | 4 | `ReactMarkdown` without `rehype-sanitize`; `javascript:` links from LLM output not blocked. | `components/MessageBubble.tsx:23-25` |
-| S11 | C | 2 | No tenant scoping: every authenticated user queries the same global registry and Pinecone projects. | `orchestrator.py:298-311` |
+| S11 | C | 2 | No tenant scoping: every authenticated user queries the same global registry and Pinecone projects. Chat **history** is now scoped per user and covered by tests; corpus scoping remains Phase 2. | `orchestrator.py:298-311` |
 
 ## Privacy
 
@@ -68,7 +68,7 @@ Phase = the delivery phase that fixes it.
 | T3 | H | 1 | Any transient Pinecone error permanently sets `is_active=False` and commits. One blip silently deletes a knowledge domain. Races across workers. | `orchestrator.py:279-288` |
 | T4 | H | 1 | Mid-stream failure loses the assistant message entirely; already-streamed tokens are never persisted. | `routers/chat.py:44-57` |
 | T5 | H | 1 | No caching of embeddings, routing decisions, or voice profile. | global |
-| T6 | M | 1 | Missing composite DB indexes `(user_id, session_id)` and `(user_id, created_at)`; session list does group-by + order-by-max unaided. | `migrations/001_initial_schema.py:50-51` |
+| T6 | M | 1 | Missing composite DB indexes `(user_id, session_id)` and `(user_id, created_at)`; session list does group-by + order-by-max unaided. **FIXED** — migration `003` adds `ix_chat_messages_user_session` and `ix_chat_messages_user_created`; both are declared on the model too, verified drift-free against a real Postgres. | `migrations/003_user_accounts_and_indexes.py` |
 | T7 | M | 1 | Blocking sync SDK clients wrapped in `asyncio.to_thread` throughout; thread-pool contention under concurrency. | `embedding_service.py`, `orchestrator.py` |
 | T8 | M | 1 | Single uvicorn worker; `alembic upgrade head` runs on every container start; `BackgroundTasks` unreliable across replicas. | `Dockerfile:16`, `railway.toml` |
 | T9 | M | 5 | Background jobs fail silently; ingest trigger returns 202 without verifying the job exists. | `routers/admin.py:51-55`, `routers/admin_audit.py:154-167` |
@@ -78,7 +78,7 @@ Phase = the delivery phase that fixes it.
 | ID | Sev | Phase | Defect | Location |
 |---|---|---|---|---|
 | E1 | C | 0 | Project not under version control — git root was `/Users/maxmayes`, zero tracked files. **Fixed**, commit `dc858b4`. | — |
-| E2 | H | 1 | No CI. No frontend tests. Backend tests are entirely mocked — no integration coverage. | absent `.github/` |
+| E2 | H | 1 | No CI. No frontend tests. Backend tests are entirely mocked — no integration coverage. **PARTLY FIXED** — `conftest.py` no longer replaces `app.db.database` with a `MagicMock`; the schema is created from `Base.metadata` against SQLite (or Postgres via `TEST_DATABASE_URL`), so models and routes are exercised for real. 253 tests, including a negative-auth suite that drives the full dependency graph. CI itself still absent. | absent `.github/` |
 | E3 | H | 3 | **No evaluation harness.** No recall@k, citation precision, groundedness, or refusal metrics. Every retrieval knob is untunable and every change unverifiable. | absent `backend/evals/` |
 | E4 | H | 1 | Dependencies unpinned (`>=`) → non-reproducible builds. | `requirements.txt` |
 | E5 | M | 1 | `ANTHROPIC_API_KEY` required at runtime but absent from `.env.example`. `CLERK_SECRET_KEY` documented but unused (false confidence). | `backend/.env.example` |

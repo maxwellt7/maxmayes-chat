@@ -20,6 +20,7 @@ from app.security.clerk_jwt import (
     TokenVerificationError,
     VerifiedToken,
 )
+from app.security.owner_bootstrap import email_from_claims, is_allowlisted_owner
 from app.security.principal import Persona, Principal, persona_for_role
 
 _log = logging.getLogger(__name__)
@@ -36,6 +37,10 @@ _verifier_configured = False
 
 def get_verifier() -> ClerkTokenVerifier:
     """Build the process-wide token verifier from settings.
+
+    Every input is environment-driven — `CLERK_ISSUER`, `CLERK_JWKS_URL`,
+    `CLERK_JWT_PUBLIC_KEY`, `CLERK_AUTHORIZED_PARTIES` — so the same image runs
+    against a development Clerk instance and a live one with no code change.
 
     Raises at request time rather than import time so the app can still boot
     (and serve /health) with incomplete configuration — but every authenticated
@@ -103,10 +108,17 @@ async def get_verified_token(
 
 
 def _initial_role(clerk_user_id: str, email: str | None) -> str:
-    """Decide the role for an account we are seeing for the first time."""
-    if clerk_user_id in settings.owner_user_id_allowlist:
-        return ROLE_OWNER
-    if email and email.lower() in settings.owner_email_allowlist:
+    """Decide the role for an account we are seeing for the first time.
+
+    Deliberately conservative: the default is member, and the only way out of it
+    is an explicit allowlist match on a claim the user cannot edit. Note that
+    email will usually be `None` — Clerk session tokens do not carry one unless a
+    JWT template adds it — so `OWNER_CLERK_USER_IDS` is the allowlist that can be
+    relied on. If neither matches at first sign-in, startup reconciliation and
+    `app.scripts.grant_owner` both fix it after the fact; see
+    `app.security.owner_bootstrap`.
+    """
+    if is_allowlisted_owner(clerk_user_id, email):
         return ROLE_OWNER
     return ROLE_MEMBER
 
@@ -116,13 +128,11 @@ def resolve_account(db: Session, verified: VerifiedToken) -> UserAccount:
 
     Clerk owns authentication; this table owns authorization. The first time we
     see a subject we create a row, applying the owner allowlist. Existing rows
-    are never silently promoted — a role change is an explicit admin action —
-    but an account already on the allowlist is repaired if it was demoted by a
-    bad migration.
+    are never silently promoted *except* by an allowlist match — that repair path
+    is what makes setting `OWNER_CLERK_USER_IDS` after the owner's first login
+    work. Nothing here can demote.
     """
-    email = verified.claims.get("email")
-    if not isinstance(email, str):
-        email = None
+    email = email_from_claims(verified.claims)
 
     account = (
         db.query(UserAccount)
@@ -140,10 +150,19 @@ def resolve_account(db: Session, verified: VerifiedToken) -> UserAccount:
         db.refresh(account)
         return account
 
-    if account.role != ROLE_OWNER and _initial_role(
+    changed = False
+    if email and account.email != email:
+        account.email = email
+        changed = True
+    if account.role != ROLE_OWNER and is_allowlisted_owner(
         verified.subject, email or account.email
-    ) == ROLE_OWNER:
+    ):
         account.role = ROLE_OWNER
+        changed = True
+        _log.warning(
+            "owner_promoted_by_allowlist clerk_user_id=%s", verified.subject
+        )
+    if changed:
         db.commit()
 
     return account
@@ -170,6 +189,11 @@ async def require_owner(
     principal: Principal = Depends(get_current_principal),
 ) -> Principal:
     if not principal.is_owner:
+        _log.warning(
+            "owner_access_denied user_id=%s persona=%s",
+            principal.user_id,
+            principal.persona.value,
+        )
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN, detail="Owner access required"
         )

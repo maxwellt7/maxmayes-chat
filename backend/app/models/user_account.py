@@ -1,11 +1,11 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, String, func
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, CheckConstraint, DateTime, String, func
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.database import Base
+from app.db.types import uuid_type
 
 # Roles are stored here rather than read from Clerk token claims. A Clerk
 # session token does not carry `publicMetadata` unless the instance is
@@ -18,9 +18,14 @@ VALID_ROLES = (ROLE_OWNER, ROLE_MEMBER)
 
 class UserAccount(Base):
     __tablename__ = "user_accounts"
+    __table_args__ = (
+        CheckConstraint(
+            "role IN ('owner', 'member')", name="ck_user_accounts_role"
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
-        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+        uuid_type(), primary_key=True, default=uuid.uuid4
     )
     clerk_user_id: Mapped[str] = mapped_column(
         String(255), nullable=False, unique=True, index=True

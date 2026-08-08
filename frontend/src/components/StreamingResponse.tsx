@@ -22,7 +22,7 @@ export function StreamingResponse({ response, onComplete, onError }: Props) {
         for await (const event of readSSEStream(response)) {
           if (cancelled) return;
           if ("error" in event) {
-            onError(event.error);
+            onError(event.error.message);
             return;
           }
           fullTextRef.current += event.token;

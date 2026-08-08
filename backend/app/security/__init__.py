@@ -10,6 +10,10 @@ from app.security.dependencies import (
     require_owner,
     resolve_account,
 )
+from app.security.owner_bootstrap import (
+    reconcile_owner_allowlist,
+    warn_if_no_owner,
+)
 from app.security.principal import Persona, Principal, anonymous_principal
 
 __all__ = [
@@ -21,7 +25,9 @@ __all__ = [
     "anonymous_principal",
     "get_current_principal",
     "get_verified_token",
+    "reconcile_owner_allowlist",
     "require_member",
     "require_owner",
     "resolve_account",
+    "warn_if_no_owner",
 ]

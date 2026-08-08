@@ -249,6 +249,10 @@ async def test_run_pipeline_deactivates_broken_index(monkeypatch):
             chunks.append(chunk)
 
         full_response = "".join(chunks)
-        assert "candidate sources" in full_response or "moved or removed" in full_response
+        assert "couldn't find anything relevant" in full_response
+        # The refusal must not name the index, the project, or Pinecone.
+        assert "broken-index" not in full_response
+        assert "Pinecone" not in full_response
+        assert "index" not in full_response.lower()
         assert fake_entry.is_active is False
         fake_db.commit.assert_called()

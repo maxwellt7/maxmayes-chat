@@ -1,9 +1,14 @@
 """Admin endpoints for Phase-0 audit + disposition approval + ingest jobs.
 
-All endpoints require ``publicMetadata.role == "admin"`` on the Clerk JWT
-(enforced via :func:`require_admin_role`). The audit endpoint synchronously
-runs the audit job inside the request — fine at Phase-0 scale (~40 indexes,
-~30 sec). If scale grows, this should move to BackgroundTasks.
+All endpoints require the ``owner`` role, enforced via :func:`require_owner`,
+which resolves the role from the ``user_accounts`` table after verifying the
+Clerk token's signature. The role is never read from a token claim: these
+endpoints return raw corpus sample chunks, so a caller who could assert their own
+role could exfiltrate the knowledge base.
+
+The audit endpoint synchronously runs the audit job inside the request — fine at
+Phase-0 scale (~40 indexes, ~30 sec). If scale grows, this should move to
+BackgroundTasks.
 """
 from __future__ import annotations
 
@@ -16,11 +21,12 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.middleware.admin_role import require_admin_role
 from app.models.index_audit import IndexAudit
 from app.models.ingest_job import IngestJob
 from app.scripts.audit_indexes import run_audit
 from app.scripts.reingest import run_ingest_job
+from app.security.dependencies import require_owner
+from app.security.principal import Principal
 
 router = APIRouter(prefix="/api/admin", tags=["admin", "audit"])
 
@@ -51,7 +57,7 @@ class DispositionResult(BaseModel):
 @router.post("/audit", response_model=AuditResponse)
 async def kick_off_audit(
     body: AuditRequest,
-    _admin: dict = Depends(require_admin_role),
+    _owner: Principal = Depends(require_owner),
 ) -> AuditResponse:
     """Run the index audit. ``mode='dry_run'`` returns rows without persisting."""
     rows = await run_audit(dry_run=(body.mode == "dry_run"))
@@ -65,7 +71,7 @@ async def kick_off_audit(
 @router.get("/audit/latest")
 def get_latest_audit(
     db: Session = Depends(get_db),
-    _admin: dict = Depends(require_admin_role),
+    _owner: Principal = Depends(require_owner),
 ) -> list[dict]:
     """Return all rows from the most-recent audit (by audit_date)."""
     latest_date = (
@@ -104,7 +110,7 @@ def approve_dispositions(
     audit_date: str,
     updates: list[DispositionUpdate],
     db: Session = Depends(get_db),
-    _admin: dict = Depends(require_admin_role),
+    _owner: Principal = Depends(require_owner),
 ) -> DispositionResult:
     """Bulk approve dispositions and auto-create ingest_jobs for RE-INGEST/MERGE.
 
@@ -155,7 +161,7 @@ def approve_dispositions(
 async def trigger_ingest(
     job_id: uuid.UUID,
     background: BackgroundTasks,
-    _admin: dict = Depends(require_admin_role),
+    _owner: Principal = Depends(require_owner),
 ) -> dict:
     """Kick off (or resume) an ingest job in the background.
 

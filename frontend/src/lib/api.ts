@@ -35,6 +35,25 @@ export async function getChatHistory(token: string, sessionId: string) {
   return res.json() as Promise<{ messages: { role: string; content: string; created_at: string }[] }>;
 }
 
+/** Maximum accepted by the server; mirrors `MAX_CHAT_MESSAGE_CHARS`. */
+export const MAX_CHAT_MESSAGE_CHARS = 4000;
+
+/** Pull the server's client-safe message out of an error response.
+ *
+ *  Rate limits and the daily spend ceiling are expected outcomes with something
+ *  useful to say, so surfacing "Chat request failed: 429" instead would be
+ *  throwing away the only actionable part. Falls back to the status code when the
+ *  body is not in the taxonomy's shape. */
+async function errorMessage(res: Response, fallback: string): Promise<string> {
+  try {
+    const body = await res.json();
+    if (body?.error?.message) return body.error.message as string;
+  } catch {
+    // no JSON body — fall through
+  }
+  return `${fallback}: ${res.status}`;
+}
+
 export async function startChatStream(
   token: string,
   message: string,
@@ -48,7 +67,9 @@ export async function startChatStream(
     },
     body: JSON.stringify({ message, session_id: sessionId }),
   });
-  if (!res.ok) throw new Error(`Chat request failed: ${res.status}`);
+  if (!res.ok) {
+    throw new Error(await errorMessage(res, "Chat request failed"));
+  }
   return res;
 }
 

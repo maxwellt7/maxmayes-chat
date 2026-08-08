@@ -7,9 +7,18 @@ class HealthResponse(BaseModel):
     status: str = "ok"
 
 
+# The user's message is passed to the optimizer, the router, the verifier and
+# the synthesizer, so its length is multiplied four times over before any
+# retrieved context is added. Without a bound, a single request can be made to
+# cost dollars rather than cents. 4000 characters is roughly 1000 tokens — far
+# more than any real question, and cheap enough that the ceiling in
+# `app.services.spend_guard` is the binding constraint rather than this.
+MAX_CHAT_MESSAGE_CHARS = 4000
+
+
 class ChatRequest(BaseModel):
-    message: str = Field(min_length=1)
-    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    message: str = Field(min_length=1, max_length=MAX_CHAT_MESSAGE_CHARS)
+    session_id: str = Field(default_factory=lambda: str(uuid.uuid4()), max_length=255)
 
 
 class ChatResponse(BaseModel):

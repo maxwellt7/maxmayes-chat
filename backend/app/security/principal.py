@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
-from app.models.user_account import ROLE_OWNER
+from app.models.user_account import ROLE_MEMBER, ROLE_OWNER
 
 
 class Persona(str, Enum):
@@ -33,13 +33,15 @@ def persona_for_role(role: str | None) -> Persona:
 
     Anything unrecognised — including `None` — resolves to the least privileged
     persona. Failing closed is the only acceptable default when the input is a
-    role string that may have come from an older migration or a typo.
+    role string that may have come from an older migration or a typo: an
+    unrecognised role means we do not know what this account is allowed to see,
+    and "do not know" must not grant corpus access.
     """
     if role == ROLE_OWNER:
         return Persona.OWNER
-    if role is None:
-        return Persona.PUBLIC
-    return Persona.MEMBER
+    if role == ROLE_MEMBER:
+        return Persona.MEMBER
+    return Persona.PUBLIC
 
 
 @dataclass(frozen=True)

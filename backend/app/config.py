@@ -61,6 +61,40 @@ class Settings(BaseSettings):
     def is_production(self) -> bool:
         return self.app_env.lower() in {"production", "prod"}
 
+    # --- cost containment -------------------------------------------------
+    # A single chat request fans out to an optimizer, a router, a verifier and a
+    # Claude synthesis. With no ceiling, one signup can drive five figures of
+    # daily spend. The default here is deliberately low: raising it is a
+    # one-line environment change, whereas an unnoticed overspend is not
+    # recoverable.
+    daily_spend_ceiling_usd: float = 10.0
+
+    # Token-bucket parameters. `burst` is the bucket capacity — how many
+    # requests can be made back to back from cold — and the hourly figure sets
+    # the refill rate.
+    #
+    # The per-IP allowance is deliberately looser than the per-account one. An
+    # address is shared: office NAT and mobile carrier NAT put many unrelated
+    # people behind one IP, so a tight per-IP bucket throttles legitimate users
+    # against each other. Per-account is the precise control; per-IP is a
+    # backstop against someone cycling through signups.
+    chat_rate_limit_per_account_per_hour: int = 60
+    chat_rate_limit_burst: int = 5
+    chat_rate_limit_per_ip_per_hour: int = 120
+    chat_rate_limit_ip_burst: int = 20
+
+    # Salt for hashing client IPs before they are stored. Rate limiting needs a
+    # stable key, not the address itself.
+    ip_hash_salt: str = "maxmayes-chat-default-salt"
+
+    # Whether to believe `X-Forwarded-For`. True is correct behind Railway's
+    # proxy, where `request.client.host` is the proxy rather than the caller.
+    # It also means a caller can spoof the header, so per-IP limiting is a
+    # speed bump and per-account limiting is the real control.
+    trust_forwarded_for: bool = True
+
+    log_level: str = "INFO"
+
     pinecone_api_key_1: str = ""
     pinecone_api_key_2: str = ""
     pinecone_api_key_3: str = ""

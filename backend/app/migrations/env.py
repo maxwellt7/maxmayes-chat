@@ -9,8 +9,10 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(__file__))))
 
 from app.config import normalized_database_url
 from app.db.database import Base
-import app.models.index_registry  # noqa: F401
-import app.models.chat  # noqa: F401
+
+# Import the package, not individual modules: a model that autogenerate cannot
+# see looks like a table that should be dropped.
+import app.models  # noqa: F401
 
 config = context.config
 config.set_main_option("sqlalchemy.url", normalized_database_url())
